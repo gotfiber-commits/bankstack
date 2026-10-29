@@ -1,0 +1,27 @@
+{
+  "name": "bankstack-jobs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Niche job board for tech and data roles at banks and credit unions",
+  "scripts": {
+    "dev": "netlify dev",
+    "db:seed": "node scripts/seed.mjs",
+    "stripe:listen": "stripe listen --forward-to localhost:8888/api/stripe-webhook",
+    "test:e2e": "node tests/e2e.mjs",
+    "test:browser": "node tests/browser.mjs"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^1.0.0",
+    "@netlify/blobs": "^8.1.0",
+    "pg": "^8.13.1",
+    "stripe": "^18.0.0"
+  },
+  "devDependencies": {
+    "netlify-cli": "^23.0.0",
+    "playwright": "^1.48.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
