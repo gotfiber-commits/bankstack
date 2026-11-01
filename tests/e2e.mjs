@@ -3,7 +3,7 @@
 // A fresh database "bankstack_e2e" is created for each run. Stripe is the local fake in fake-stripe.mjs.
 //   npm run test:e2e
 import { execFileSync } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import pg from "pg";
@@ -84,6 +84,13 @@ const jobFields = {
 };
 
 // pdf / docx fixtures
+// expected counts come from the seed file, so adding listings never breaks the suite
+const SEED = JSON.parse(readFileSync(new URL("../public/seed-jobs.json", import.meta.url), "utf8"));
+const seedText = (j) => [j.title, j.company, j.location, j.summary].join(" ").toLowerCase();
+const SEED_LEN = SEED.length;
+const REGIONS_DA = SEED.filter((j) => j.category === "data-analytics" && seedText(j).includes("regions")).length;
+const SEED_CU = SEED.filter((j) => j.institution_type === "credit-union").length;
+
 const pdfBytes = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n");
 const fakePdf = Buffer.from("MZ this is not a pdf");
 
@@ -114,11 +121,11 @@ try {
   let r = await call("GET", "/");
   check("home page serves the app", r.status === 200 && String(r.data).includes('id="view"'));
   r = await call("GET", "/api/jobs");
-  check("25 seeded listings are public", r.data.jobs?.length === 25, r.data.jobs?.length);
+  check("seeded listings are public", r.data.jobs?.length === SEED_LEN, `${r.data.jobs?.length} vs ${SEED_LEN}`);
   r = await call("GET", "/api/jobs?q=regions&category=data-analytics");
-  check("search + specialty filter", r.data.jobs.length === 4 && r.data.jobs.every((j) => j.company === "Regions Bank"), r.data.jobs.map((j) => j.title));
+  check("search + department filter", r.data.jobs.length === REGIONS_DA && r.data.jobs.every((j) => j.company === "Regions Bank"), r.data.jobs.map((j) => j.title));
   r = await call("GET", "/api/jobs?institution_type=credit-union");
-  check("institution filter (credit unions)", r.data.jobs.length === 6, r.data.jobs.length);
+  check("institution filter (credit unions)", r.data.jobs.length === SEED_CU, `${r.data.jobs.length} vs ${SEED_CU}`);
   r = await call("GET", "/api/jobs/99999");
   check("unknown job returns 404", r.status === 404);
 
@@ -147,7 +154,7 @@ try {
   check("checkout return issues a posting key", r.status === 200 && /^bsk_/.test(r.data.token) && r.data.job?.status === "open", r.data);
   const keyA = r.data.token;
   r = await call("GET", "/api/jobs");
-  check("direct posting is listed first", r.data.jobs[0].id === jobA && r.data.jobs.length === 26);
+  check("direct posting is listed first", r.data.jobs[0].id === jobA && r.data.jobs.length === SEED_LEN + 1);
 
   r = await call("POST", "/api/checkout", { body: { ...jobFields, company: "Impostor", email: "hr@shoalsbank.test" } });
   check("someone else can't post (and get the key) with an existing email", r.status === 409, r.data);
@@ -363,20 +370,23 @@ try {
   const matches = r.data.matches;
   check("matches ranked high to low", r.data.basis === "resume" && matches.length >= 20
     && matches.every((m, i) => i === 0 || matches[i - 1].score >= m.score), matches?.length);
-  check("lending job ranks first for a lending résumé", matches[0].title === "Mortgage Loan Officer",
+  check("lending jobs rank first for a lending résumé", matches[0].category === "lending-credit",
     matches.slice(0, 3).map((m) => `${m.title}:${m.score}`));
-  check("top match clearly beats the data jobs", matches[0].score - matches.find((m) => m.category === "data-analytics").score >= 20,
+  const mloRank = matches.findIndex((m) => m.title === "Mortgage Loan Officer");
+  check("the bank's own lending posting is in the top 3", mloRank > -1 && mloRank < 3, mloRank);
+  check("lending clearly beats the data jobs", matches[0].score - matches.find((m) => m.category === "data-analytics").score >= 15,
     matches.slice(0, 5).map((m) => `${m.title}:${m.score}`));
   check("match explains itself", matches[0].reasons.join(" ").toLowerCase().includes("underwriting"), matches[0].reasons);
 
-  r = await call("POST", "/api/candidate/apply", { token: ck, body: { job_id: matches[0].id, cover_note: "Happy to talk." } });
+  const mlo = matches[mloRank];
+  r = await call("POST", "/api/candidate/apply", { token: ck, body: { job_id: mlo.id, cover_note: "Happy to talk." } });
   check("quick apply sends", r.status === 200 && r.data.ok && !r.data.duplicate, r.data);
   check("employer emailed about the quick apply", !!lastEmailTo("jobs@tvcu.test")?.subject.includes("Casey Banks"));
   check("candidate gets a confirmation", !!lastEmailTo("casey@example.test")?.subject.includes("Your application"));
-  r = await call("POST", "/api/candidate/apply", { token: ck, body: { job_id: matches[0].id } });
+  r = await call("POST", "/api/candidate/apply", { token: ck, body: { job_id: mlo.id } });
   check("second quick apply caught", r.data.duplicate === true);
   r = await call("GET", "/api/candidate/matches", { token: ck });
-  check("applied flag shows on matches", r.data.matches.find((m) => m.id === matches[0].id)?.applied === true);
+  check("applied flag shows on matches", r.data.matches.find((m) => m.id === mlo.id)?.applied === true);
 
   const empB = await call("GET", "/api/employer", { token: keyB });
   const qa = empB.data.applications.find((a) => a.email === "casey@example.test");

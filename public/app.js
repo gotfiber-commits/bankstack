@@ -249,7 +249,12 @@
     const counts = {};
     jobs.forEach((j) => (counts[j.category] = (counts[j.category] || 0) + 1));
     const withPay = jobs.filter((j) => j.salary_min || j.salary_max);
-    const preview = [...jobs].sort((a, b) => (b.direct - a.direct) || ((b.salary_max || b.salary_min || 0) - (a.salary_max || a.salary_min || 0))).slice(0, 4);
+    // Show the board's breadth: prefer one role per department, best-paying first
+    const ranked = [...jobs].sort((a, b) => (b.direct - a.direct) || ((b.salary_max || b.salary_min || 0) - (a.salary_max || a.salary_min || 0)));
+    const preview = [];
+    const seenCats = new Set();
+    for (const j of ranked) if (!seenCats.has(j.category)) { preview.push(j); seenCats.add(j.category); if (preview.length === 4) break; }
+    for (const j of ranked) { if (preview.length === 4) break; if (!preview.includes(j)) preview.push(j); }
 
     view.innerHTML = `
       <section class="home-hero">

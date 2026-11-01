@@ -1,7 +1,13 @@
 // Drives the real site in headless Chromium: the same clicks and form fills a person makes.
 //   npx playwright install chromium   (once)
 //   npm run test:browser
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
+
+const SEED = JSON.parse(readFileSync(new URL("../public/seed-jobs.json", import.meta.url), "utf8"));
+const SEED_LEN = SEED.length;
+const DA_LEN = SEED.filter((j) => j.category === "data-analytics").length;
+// the "mission" search runs while the Data & analytics chip is active, so count within that department
+const MISSION_LEN = SEED.filter((j) => j.category === "data-analytics" && [j.title, j.company, j.location, j.summary].join(" ").toLowerCase().includes("mission")).length;
 import { startStack, BASE } from "./stack.mjs";
 
 const { chromium } = await import(process.env.PLAYWRIGHT_MODULE || "playwright");
@@ -47,15 +53,15 @@ try {
   await emp.goto(BASE + "/");
   await emp.waitForSelector(".home-hero h1");
   check("headline shows", (await emp.textContent(".home-hero h1")).includes("banks and credit unions"));
-  check("live figures come from the database", (await emp.textContent(".figures-grid strong")) === "25");
+  check("live figures come from the database", (await emp.textContent(".figures-grid strong")) === String(SEED_LEN));
   await shot(emp, "01-home");
   await emp.click("text=View current positions");
   await emp.waitForSelector(".ledger li");
-  check("View current positions opens the board", (await emp.locator(".ledger .job-row").count()) === 25);
+  check("View current positions opens the board", (await emp.locator(".ledger .job-row").count()) === SEED_LEN);
   await emp.click('.cat-chip[data-cat="data-analytics"]');
-  check("department chip filters the list", (await emp.locator(".ledger .job-row").count()) === 19);
+  check("department chip filters the list", (await emp.locator(".ledger .job-row").count()) === DA_LEN);
   await emp.fill("#f-q", "mission");
-  check("search narrows it further", (await emp.locator(".ledger .job-row").count()) === 1);
+  check("search narrows it further", (await emp.locator(".ledger .job-row").count()) === MISSION_LEN);
   await shot(emp, "02-jobs");
 
   // ============================================================
@@ -104,7 +110,7 @@ try {
   check("employer was emailed", stack.outbox().some((m) => m.to === "hr@shoalsbank.test" && m.subject.includes("Jordan Lee")));
   await cand.click("text=← All positions");
   await cand.waitForSelector(".ledger .job-row");
-  check("nav from a /jobs page goes back to the board", (await cand.locator(".ledger .job-row").count()) === 26 && new URL(cand.url()).pathname === "/");
+  check("nav from a /jobs page goes back to the board", (await cand.locator(".ledger .job-row").count()) === SEED_LEN + 1 && new URL(cand.url()).pathname === "/");
   await cand.locator("#alerts-form .chip-check", { hasText: "Data & analytics" }).click();
   await cand.fill("#al-email", "jordan@example.test");
   await cand.click("text=Send me alerts");
@@ -122,7 +128,6 @@ try {
   check("applicant appears, flagged new", (await emp.textContent("tr.is-new")).includes("Jordan Lee"));
   const [download] = await Promise.all([emp.waitForEvent("download"), emp.click("text=Jordan_Lee_Resume.pdf")]);
   const saved = await download.path();
-  const { readFileSync } = await import("node:fs");
   check("résumé downloads intact", readFileSync(saved).equals(pdf) && download.suggestedFilename() === "Jordan_Lee_Resume.pdf");
   await emp.selectOption("select.stage", "interview");
   await emp.waitForSelector("#act-msg:has-text('Moved to Interview')");

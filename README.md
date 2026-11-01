@@ -36,12 +36,12 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 Static front end + Netlify Functions (Node 20+), Neon Postgres, Stripe, Resend for email, Netlify Blobs for résumés.
 
 ```
-public/                  index.html, app.js, app.css, seed-jobs.json (25 real listings)
+public/                  index.html, app.js, app.css, seed-jobs.json (64 real listings)
 netlify/functions/       jobs, apply, checkout, session, stripe-webhook, employer, auth, alerts,
                          admin, job-page (/jobs/:id), sitemap, alerts-digest (weekly), daily-maintenance
 netlify/lib/             shared (db, Stripe, validation), email, files (résumés), tasks (digest, link check)
 db/schema.sql            employers, jobs, applications, alert_subscriptions (safe to re-run; upgrades older DBs)
-scripts/seed.mjs         creates the schema and loads the 25 seed jobs
+scripts/seed.mjs         creates the schema and loads the seed jobs
 tests/                   e2e.mjs (81 API checks), browser.mjs (31 checks in real Chromium), fake Stripe, local server
 ```
 
@@ -116,7 +116,7 @@ npm run test:browser      # 31 checks clicking through the real pages, desktop a
 
 ## About the seed listings
 
-25 real openings gathered in October 2026 from public job sites, each linking to its source. They expire after 30 days, and the daily link check closes any whose original page disappears. Add fresh ones from `/#admin`.
+64 real openings across every department (branch, lending, commercial, operations, risk, finance, wealth, technology, data and leadership), gathered October-November 2026 from public job sites, each linking to its source. They expire after 30 days, and the daily link check closes any whose original page disappears. Add fresh ones from `/#admin`.
 
 ## Worth doing next
 
