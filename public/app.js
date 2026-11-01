@@ -868,7 +868,7 @@
               <div class="field"><label for="s-type">Type</label><select id="s-type" name="institution_type">${options(INST, "bank")}</select></div>
             </div>
             <div class="row-2">
-              <div class="field"><label for="s-url">Original posting link</label><input id="s-url" name="source_url" type="url" required placeholder="https://"></div>
+              <div class="field"><label for="s-url">Original posting link</label><input id="s-url" name="source_url" type="url" required placeholder="https://"><span class="hint">Use the bank\'s own careers or ATS page (iCIMS, Workday, Paylocity) when you can. Avoid copying from other job boards; their terms often forbid reuse.</span></div>
               <div class="field"><label for="s-src">Found on</label><input id="s-src" name="source_name" placeholder="Bank careers site"></div>
             </div>
             ${roleFields({}, "s")}

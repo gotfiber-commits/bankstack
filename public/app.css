@@ -410,3 +410,7 @@ tr.is-new td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   .match-act { width: 100%; }
   .match-act .btn { width: 100%; }
 }
+
+/* Footer: stacked lines read better than side-by-side with the disclaimer */
+.site-foot .wrap { flex-direction: column; gap: 0.45rem; justify-content: flex-start; }
+.site-foot a { color: var(--muted); }

@@ -114,6 +114,12 @@ npm run test:browser      # 31 checks clicking through the real pages, desktop a
 | GET/POST | `/api/admin…` | Bearer `ADMIN_TOKEN` |
 | GET | `/jobs/:id`, `/sitemap.xml`, `/robots.txt` | server-rendered for search engines |
 
+## Legal pages and takedowns
+
+- `/privacy.html` and `/terms.html` are linked from the footer. They're solid drafts written for this exact product, but have a lawyer review them before you advertise, and create the `listings@` and `privacy@` mailboxes on your domain (aliases to your inbox are fine).
+- The footer states BankJobz isn't affiliated with the employers shown and gives employers a claim/correct/remove email. Honor removal requests the same day (admin → Take down).
+- When adding sourced listings, prefer the bank's own careers/ATS page over copies on other job boards.
+
 ## About the seed listings
 
 64 real openings across every department (branch, lending, commercial, operations, risk, finance, wealth, technology, data and leadership), gathered October-November 2026 from public job sites, each linking to its source. They expire after 30 days, and the daily link check closes any whose original page disappears. Add fresh ones from `/#admin`.
