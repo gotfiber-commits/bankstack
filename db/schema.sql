@@ -99,3 +99,28 @@ ALTER TABLE jobs ADD CONSTRAINT jobs_category_check CHECK (category IN ('branch-
 UPDATE alert_subscriptions
    SET categories = ARRAY(SELECT DISTINCT CASE c WHEN 'data-engineering' THEN 'data-analytics' WHEN 'analytics' THEN 'data-analytics' WHEN 'architecture' THEN 'data-analytics' WHEN 'software' THEN 'technology' WHEN 'security' THEN 'technology' WHEN 'risk-tech' THEN 'risk-compliance' ELSE c END FROM unnest(categories) AS c)
  WHERE categories && ARRAY['data-engineering','analytics','architecture','software','security','risk-tech']::text[];
+
+-- Candidate profiles (Nov 2026): one profile, résumé on file, quick apply, ranked matches.
+CREATE TABLE IF NOT EXISTS candidates (
+  id                  BIGSERIAL PRIMARY KEY,
+  name                TEXT NOT NULL DEFAULT '',
+  email               TEXT NOT NULL UNIQUE,
+  phone               TEXT,
+  linkedin_url        TEXT,
+  location            TEXT,
+  work_mode_pref      TEXT NOT NULL DEFAULT 'any' CHECK (work_mode_pref IN ('any','onsite','hybrid','remote')),
+  categories          TEXT[] NOT NULL DEFAULT '{}',   -- departments they'd work in
+  summary             TEXT,                           -- experience in their own words
+  api_token           TEXT UNIQUE,                    -- ck_… bearer token
+  login_token_hash    TEXT,                           -- emailed sign-in link (sha256), single use
+  login_token_expires TIMESTAMPTZ,
+  resume_key          TEXT,                           -- file in Netlify Blobs
+  resume_name         TEXT,
+  resume_type         TEXT,
+  resume_size         INTEGER,
+  resume_text         TEXT,                           -- extracted at upload, used for matching
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS candidate_id BIGINT REFERENCES candidates(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS applications_candidate_idx ON applications (candidate_id);

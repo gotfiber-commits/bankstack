@@ -87,6 +87,27 @@ const jobFields = {
 const pdfBytes = Buffer.from("%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n");
 const fakePdf = Buffer.from("MZ this is not a pdf");
 
+// A tiny but valid PDF with real extractable text, for the matching tests.
+function makePdf(text) {
+  const escPdf = (x) => x.replace(/[\\()]/g, (c) => "\\" + c);
+  const words = text.split(/\s+/); const lines = [];
+  for (let i = 0; i < words.length; i += 10) lines.push(words.slice(i, i + 10).join(" "));
+  const content = "BT /F1 12 Tf 14 TL 72 720 Td\n" + lines.map((l) => `(${escPdf(l)}) Tj T*`).join("\n") + "\nET";
+  const objs = [
+    "<</Type/Catalog/Pages 2 0 R>>",
+    "<</Type/Pages/Kids[3 0 R]/Count 1>>",
+    "<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Resources<</Font<</F1 4 0 R>>>>/Contents 5 0 R>>",
+    "<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>",
+    `<</Length ${content.length}>>stream\n${content}\nendstream`,
+  ];
+  let pdf = "%PDF-1.4\n"; const offsets = [];
+  objs.forEach((o, i) => { offsets.push(pdf.length); pdf += `${i + 1} 0 obj\n${o}\nendobj\n`; });
+  const xref = pdf.length;
+  pdf += `xref\n0 ${objs.length + 1}\n0000000000 65535 f \n` + offsets.map((o) => String(o).padStart(10, "0") + " 00000 n \n").join("");
+  pdf += `trailer\n<</Size ${objs.length + 1}/Root 1 0 R>>\nstartxref\n${xref}\n%%EOF`;
+  return Buffer.from(pdf, "latin1");
+}
+
 try {
   // ================================================================
   section("Browsing");
@@ -314,6 +335,65 @@ try {
   r = await fetch(unsub, { redirect: "manual" });
   const [{ n: subsLeft }] = await sql`SELECT COUNT(*)::int n FROM alert_subscriptions WHERE email = 'alex@example.test'`;
   check("unsubscribe link removes them", r.status === 303 && subsLeft === 0);
+
+  // ================================================================
+  section("Candidate profiles, matching and quick apply");
+  outbox().length = 0;
+  r = await call("POST", "/api/candidate-auth/request", { body: { email: "casey@example.test", name: "Casey Banks" } });
+  const clink = lastEmailTo("casey@example.test")?.text.match(/clogin=([a-f0-9]{48})/)?.[1];
+  check("profile sign-in link emailed", r.status === 200 && !!clink);
+  r = await call("POST", "/api/candidate-auth/verify", { body: { token: clink } });
+  const ck = r.data.token;
+  check("sign-in issues a candidate token", r.status === 200 && /^ck_/.test(ck || ""), r.data);
+  r = await call("POST", "/api/candidate-auth/verify", { body: { token: clink } });
+  check("candidate link can't be used twice", r.status === 401);
+
+  r = await call("PUT", "/api/candidate", { token: ck, body: { name: "Casey Banks", location: "Florence, AL",
+    work_mode_pref: "hybrid", categories: ["lending-credit", "nonsense"], summary: "", phone: "256-555-0100",
+    linkedin_url: "https://linkedin.com/in/caseybanks" } });
+  check("profile saves", r.status === 200, r.data);
+
+  const resumePdf = makePdf("Casey Banks, Florence Alabama. Senior mortgage loan officer: ten years of consumer lending, underwriting and loan origination at a community bank. NMLS licensed. Credit analysis, HELOC portfolios, closing disclosures and coaching a team of processors.");
+  form = new FormData();
+  form.append("resume", new Blob([resumePdf], { type: "application/pdf" }), "Casey Banks Resume.pdf");
+  r = await call("POST", "/api/candidate/resume", { token: ck, form });
+  check("résumé uploads and its text is read", r.status === 200 && r.data.text_extracted === true, r.data);
+
+  r = await call("GET", "/api/candidate/matches", { token: ck });
+  const matches = r.data.matches;
+  check("matches ranked high to low", r.data.basis === "resume" && matches.length >= 20
+    && matches.every((m, i) => i === 0 || matches[i - 1].score >= m.score), matches?.length);
+  check("lending job ranks first for a lending résumé", matches[0].title === "Mortgage Loan Officer",
+    matches.slice(0, 3).map((m) => `${m.title}:${m.score}`));
+  check("top match clearly beats the data jobs", matches[0].score - matches.find((m) => m.category === "data-analytics").score >= 20,
+    matches.slice(0, 5).map((m) => `${m.title}:${m.score}`));
+  check("match explains itself", matches[0].reasons.join(" ").toLowerCase().includes("underwriting"), matches[0].reasons);
+
+  r = await call("POST", "/api/candidate/apply", { token: ck, body: { job_id: matches[0].id, cover_note: "Happy to talk." } });
+  check("quick apply sends", r.status === 200 && r.data.ok && !r.data.duplicate, r.data);
+  check("employer emailed about the quick apply", !!lastEmailTo("jobs@tvcu.test")?.subject.includes("Casey Banks"));
+  check("candidate gets a confirmation", !!lastEmailTo("casey@example.test")?.subject.includes("Your application"));
+  r = await call("POST", "/api/candidate/apply", { token: ck, body: { job_id: matches[0].id } });
+  check("second quick apply caught", r.data.duplicate === true);
+  r = await call("GET", "/api/candidate/matches", { token: ck });
+  check("applied flag shows on matches", r.data.matches.find((m) => m.id === matches[0].id)?.applied === true);
+
+  const empB = await call("GET", "/api/employer", { token: keyB });
+  const qa = empB.data.applications.find((a) => a.email === "casey@example.test");
+  check("quick apply lands in the employer dashboard with résumé", qa?.has_resume === true && qa.name === "Casey Banks", qa);
+  r = await call("GET", `/api/employer/applications/${qa.id}/resume`, { token: keyB, raw: true });
+  check("employer downloads the quick-apply résumé byte for byte",
+    r.status === 200 && Buffer.from(await r.arrayBuffer()).equals(resumePdf));
+
+  const sourcedMatch = matches.find((m) => !m.direct);
+  r = await call("POST", "/api/candidate/apply", { token: ck, body: { job_id: sourcedMatch.id } });
+  check("quick apply on a sourced job hands back the original link", r.data.external === true && /^https?:/.test(r.data.apply_url || ""), r.data);
+
+  r = await call("GET", "/api/candidate", { token: "ck_wrong" });
+  check("wrong candidate token refused", r.status === 401);
+  r = await call("GET", "/api/candidate", { token: ck });
+  check("profile lists their applications", r.data.applications.length >= 2 && r.data.candidate.resume_name === "Casey Banks Resume.pdf",
+    r.data.applications?.length);
 
   // ================================================================
   section("Admin console and maintenance");

@@ -170,3 +170,12 @@ export async function createJobCheckout(req, employer, jobId) {
   });
   return session.url;
 }
+
+// Resolves the candidate from "Authorization: Bearer ck_…". Returns null when missing or unknown.
+export async function candidateFromRequest(req) {
+  const auth = req.headers.get("authorization") || "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (!token.startsWith("ck_")) return null;
+  const rows = await db()`SELECT * FROM candidates WHERE api_token = ${token} LIMIT 1`;
+  return rows[0] || null;
+}

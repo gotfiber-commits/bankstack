@@ -59,12 +59,14 @@
   };
   const key = () => store.get("bankstack.key");
   const adminKey = () => store.get("bankstack.admin");
+  const ckey = () => store.get("bankjobz.ck");
 
   async function api(path, opts = {}) {
     const isForm = typeof FormData !== "undefined" && opts.body instanceof FormData;
     const headers = { ...(isForm ? {} : { "content-type": "application/json" }), ...(opts.headers || {}) };
     if (opts.auth && key()) headers.authorization = "Bearer " + key();
     if (opts.admin && adminKey()) headers.authorization = "Bearer " + adminKey();
+    if (opts.cauth && ckey()) headers.authorization = "Bearer " + ckey();
     const res = await fetch(path, { ...opts, headers });
     const type = res.headers.get("content-type") || "";
     if (!type.includes("application/json")) throw new Error("The server isn't reachable right now.");
@@ -292,6 +294,7 @@
             <h2>Roles that value banking experience.</h2>
             <p>Every listing is a job at a bank or credit union. Filter by department, institution type and on-site, hybrid or remote, then apply with your résumé in a couple of minutes.</p>
             <a class="text-link" href="#jobs">Browse positions →</a>
+            <a class="text-link" href="#profile">Create a free profile and get jobs ranked for you →</a>
           </div>
           <div class="audience">
             <p class="eyebrow">For banks and credit unions</p>
@@ -442,6 +445,7 @@
           <div><button class="linkish" id="copy-link" type="button">Copy link to this job</button></div>
         </article>
         <aside class="panel">
+          <div id="qa-slot"></div>
           <h2>Apply for this role</h2>
           ${external ? `<a class="btn secondary" href="${esc(j.apply_url)}" target="_blank" rel="noopener">Open the original posting ↗</a>
             <p class="source-note">Or leave your details and we'll take you there.</p>` : ""}
@@ -467,6 +471,7 @@
       catch { e.target.textContent = url; }
     });
 
+    maybeQuickApply(j);
     const form = document.getElementById("apply-form");
     if (!form) return;
     form.addEventListener("submit", async (e) => {
@@ -911,6 +916,201 @@
     });
   }
 
+
+  // ---------- candidate profile, matches and quick apply ----------
+  function candidateSignedOut(message) {
+    view.innerHTML = `
+      <div class="wrap post">
+        <section class="post-intro">
+          <p class="eyebrow">For job seekers</p>
+          <h1>One profile. Every bank job, ranked for you.</h1>
+          <p class="lede">Create a free profile and upload your résumé. We rank every opening at banks and credit unions by how well it fits your experience, and you apply to any of them in one click.</p>
+          ${message ? `<p class="msg error">${esc(message)}</p>` : ""}
+        </section>
+        <form class="panel form" id="cstart-form" novalidate>
+          <h2>Create your profile or sign in</h2>
+          <div class="field"><label for="cs-name">Full name</label><input id="cs-name" name="name" autocomplete="name"></div>
+          <div class="field"><label for="cs-email">Email</label><input id="cs-email" name="email" type="email" autocomplete="email" required><span class="hint">We email you a sign-in link. No password to remember.</span></div>
+          ${honeypot}
+          <button class="btn" type="submit">Email me a sign-in link</button>
+          <div class="msg" id="cs-msg" hidden></div>
+        </form>
+      </div>`;
+    document.getElementById("cstart-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById("cs-msg");
+      const fd = new FormData(e.currentTarget);
+      const email = String(fd.get("email") || "").trim();
+      if (!/^\S+@\S+\.\S+$/.test(email)) return showMsg(msg, "Enter a valid email address.", true);
+      if (state.demo) return showMsg(msg, "Preview mode: on the live site this emails you a sign-in link.", false);
+      try {
+        await api("/api/candidate-auth/request", { method: "POST", body: JSON.stringify({ email, name: fd.get("name"), company_website: fd.get("company_website") }) });
+        showMsg(msg, `Check ${email} for your sign-in link. It works for 30 minutes.`, false);
+      } catch (err) { showMsg(msg, err.message, true); }
+    });
+  }
+
+  function candidateExpired(err) {
+    store.del("bankjobz.ck");
+    candidateSignedOut(err && err.status === 401 ? "Your sign-in expired. Enter your email for a new link." : err?.message);
+  }
+
+  async function viewProfile() {
+    if (!ckey()) return candidateSignedOut();
+    view.innerHTML = `<div class="wrap narrow"><p>Loading your profile…</p></div>`;
+    let d;
+    try { d = await api("/api/candidate", { cauth: true }); }
+    catch (err) { return candidateExpired(err); }
+    const me = d.candidate;
+    view.innerHTML = `
+      <div class="wrap post">
+        <section class="post-intro">
+          <p class="eyebrow">Your profile</p>
+          <h1>${esc(me.name || "Welcome")}</h1>
+          <p class="lede">The more your profile says, the sharper your matches. Your résumé stays private: a bank only sees it when you apply.</p>
+          <div class="cta-row"><a class="btn" href="#matches">See my matches</a><button class="linkish" id="c-signout" type="button">Sign out</button></div>
+          ${d.applications.length ? `<div><h2 style="font-size:1rem;margin-bottom:0.4rem">Jobs you've applied to</h2><ul class="applied-list">${d.applications.map((a) => `<li><a href="${jobHref(a.job_id)}">${esc(a.job_title)}</a> · ${esc(a.company)} <span class="source-note">${esc(fmtDate(a.created_at))}</span></li>`).join("")}</ul></div>` : ""}
+        </section>
+        <form class="panel form" id="profile-form" novalidate>
+          <h2>About you</h2>
+          <div class="row-2">
+            <div class="field"><label for="pr-name">Full name</label><input id="pr-name" name="name" autocomplete="name" value="${esc(me.name || "")}" required></div>
+            <div class="field"><label for="pr-phone">Phone (optional)</label><input id="pr-phone" name="phone" type="tel" autocomplete="tel" value="${esc(me.phone || "")}"></div>
+          </div>
+          <div class="row-2">
+            <div class="field"><label for="pr-location">City &amp; state</label><input id="pr-location" name="location" placeholder="Florence, AL" value="${esc(me.location || "")}"></div>
+            <div class="field"><label for="pr-mode">Work preference</label><select id="pr-mode" name="work_mode_pref">${options({ any: "Anything", onsite: "On-site", hybrid: "Hybrid", remote: "Remote" }, me.work_mode_pref || "any")}</select></div>
+          </div>
+          <div class="field"><label for="pr-linkedin">LinkedIn (optional)</label><input id="pr-linkedin" name="linkedin_url" type="url" placeholder="https://linkedin.com/in/…" value="${esc(me.linkedin_url || "")}"></div>
+          <div class="field"><label>Departments you'd work in</label>
+            <div class="chip-set">${Object.entries(CATEGORIES).map(([k, v]) => `<label class="chip-check"><input type="checkbox" name="categories" value="${k}"${(me.categories || []).includes(k) ? " checked" : ""}><span>${esc(v)}</span></label>`).join("")}</div>
+          </div>
+          <div class="field"><label for="pr-summary">Experience in your own words (optional)</label><textarea id="pr-summary" name="summary" rows="4" placeholder="15 years in consumer lending; NMLS; led a team of six processors…">${esc(me.summary || "")}</textarea><span class="hint">Used for matching alongside your résumé.</span></div>
+          <h2>Résumé</h2>
+          ${me.resume_name
+            ? `<p class="source-note">On file: <b>${esc(me.resume_name)}</b>${me.resume_size ? ` (${fmtSize(me.resume_size)})` : ""}.${me.text_ok ? "" : " We couldn't read text from this file, so matches lean on your profile details."} Choose a new file to replace it.</p>`
+            : `<p class="source-note">No résumé yet. Matching works best once one is on file.</p>`}
+          <div class="field"><label for="pr-file">Résumé file</label><input id="pr-file" name="resume" type="file" accept=".pdf,.doc,.docx"><span class="hint">PDF or Word, up to 5 MB.</span></div>
+          <button class="btn" type="submit">Save profile</button>
+          <div class="msg" id="pr-msg" hidden></div>
+        </form>
+      </div>`;
+    document.getElementById("c-signout").addEventListener("click", () => { store.del("bankjobz.ck"); location.hash = "home"; });
+    document.getElementById("profile-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const formEl = e.currentTarget;
+      const msg = document.getElementById("pr-msg");
+      const fd = new FormData(formEl);
+      if (!String(fd.get("name")).trim()) return showMsg(msg, "Enter your name.", true);
+      const file = fd.get("resume");
+      if (file && file.size > 5 * 1024 * 1024) return showMsg(msg, "Résumés can be up to 5 MB.", true);
+      if (file && file.size && !/\.(pdf|docx?)$/i.test(file.name)) return showMsg(msg, "Upload your résumé as a PDF or Word document.", true);
+      const btn = formEl.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        await api("/api/candidate", { method: "PUT", cauth: true, body: JSON.stringify({
+          name: fd.get("name"), phone: fd.get("phone"), location: fd.get("location"),
+          work_mode_pref: fd.get("work_mode_pref"), linkedin_url: fd.get("linkedin_url"),
+          summary: fd.get("summary"), categories: fd.getAll("categories") }) });
+        let note = "Profile saved.";
+        if (file && file.size) {
+          const rf = new FormData();
+          rf.append("resume", file);
+          const r = await api("/api/candidate/resume", { method: "POST", cauth: true, body: rf });
+          note = r.text_extracted ? "Profile and résumé saved." : "Saved. We couldn't read text from that file, so matches lean on your profile details.";
+        }
+        state.pendingFlash = [note + " Here are your matches."];
+        location.hash = "matches";
+      } catch (err) { showMsg(msg, err.message, true); btn.disabled = false; }
+    });
+  }
+
+  async function viewMatches() {
+    if (!ckey()) return candidateSignedOut();
+    if (state.demo) {
+      view.innerHTML = `<div class="wrap narrow"><p class="msg">Preview mode: matching runs once the site is deployed with its database.</p></div>`;
+      return;
+    }
+    view.innerHTML = `<div class="wrap narrow"><p>Ranking every open job against your profile…</p></div>`;
+    let d;
+    try { d = await api("/api/candidate/matches", { cauth: true }); }
+    catch (err) { return candidateExpired(err); }
+    const TIER = { strong: "Strong match", good: "Good match", possible: "Worth a look" };
+    view.innerHTML = `
+      <div class="wrap dash">
+        <div class="dash-head">
+          <div style="display:grid;gap:0.3rem">
+            <h1 style="font-size:1.8rem">Your matches</h1>
+            <span class="source-note">${d.matches.length} open ${d.matches.length === 1 ? "job" : "jobs"}, ranked against ${d.basis === "resume" ? "your résumé and profile" : "your profile"}.${d.basis === "resume" ? "" : ` <a href="#profile">Upload a résumé</a> for sharper rankings.`}</span>
+          </div>
+          <div class="cta-row"><a class="btn secondary" href="#profile">Edit profile</a></div>
+        </div>
+        <p class="source-note" id="act-msg" aria-live="polite"></p>
+        <ul class="ledger match-list">
+          ${d.matches.map((m) => `<li class="match-row${m.applied ? " is-applied" : ""}">
+            <div class="match-score tier-${m.tier}"><b>${m.score}</b><span>${TIER[m.tier] || ""}</span></div>
+            <div class="job-main">
+              <a class="job-title" href="${jobHref(m.id)}">${esc(m.title)}</a>
+              <span class="job-meta">${esc(m.company)} · ${esc(m.location)}${salary(m) ? " · " + esc(salary(m)) : ""}</span>
+              <span class="tags">${m.direct ? '<span class="tag direct">Direct</span>' : ""}<span class="tag">${esc(CATEGORIES[m.category] || m.category)}</span><span class="tag">${esc(MODES[m.work_mode] || m.work_mode)}</span></span>
+              ${m.reasons.length ? `<span class="source-note">${esc(m.reasons.join(" · "))}</span>` : ""}
+            </div>
+            <div class="match-act">${m.applied ? `<span class="status-pill">Applied</span>` : m.direct ? `<button class="btn" data-qa="${m.id}" type="button">Quick apply</button>` : `<a class="btn secondary" href="${jobHref(m.id)}">View &amp; apply</a>`}</div>
+          </li>`).join("")}
+        </ul>
+      </div>`;
+    view.querySelectorAll("[data-qa]").forEach((b) => b.addEventListener("click", async () => {
+      b.disabled = true;
+      b.textContent = "Applying…";
+      try {
+        const r = await api("/api/candidate/apply", { method: "POST", cauth: true, body: JSON.stringify({ job_id: b.dataset.qa }) });
+        b.closest(".match-act").innerHTML = `<span class="status-pill">Applied</span>`;
+        document.getElementById("act-msg").textContent = r.duplicate
+          ? "You had already applied to that one."
+          : "Application sent with your résumé attached. The bank also gets it by email.";
+      } catch (err) {
+        b.disabled = false;
+        b.textContent = "Quick apply";
+        document.getElementById("act-msg").textContent = err.message;
+      }
+    }));
+  }
+
+  async function maybeQuickApply(j) {
+    const slot = document.getElementById("qa-slot");
+    if (!slot || state.demo || !ckey() || !j.direct || j.apply_url) return;
+    let d;
+    try { d = await api("/api/candidate", { cauth: true }); } catch { return; }
+    const me = d.candidate;
+    const prior = d.applications.find((a) => String(a.job_id) === String(j.id));
+    if (prior) {
+      slot.innerHTML = `<p class="msg">You applied to this role on ${esc(fmtDate(prior.created_at))}.</p>`;
+      return;
+    }
+    if (!me.resume_name) {
+      slot.innerHTML = `<p class="source-note">Signed in as ${esc(me.name || me.email)}. <a href="#profile">Add a résumé</a> to apply in one click.</p>`;
+      return;
+    }
+    slot.innerHTML = `
+      <div class="qa-box">
+        <button class="btn" id="qa-btn" type="button">Quick apply as ${esc(me.name || me.email)}</button>
+        <span class="hint">Sends your profile and ${esc(me.resume_name)}. Or use the form below.</span>
+      </div>`;
+    document.getElementById("qa-btn").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      e.target.textContent = "Applying…";
+      try {
+        await api("/api/candidate/apply", { method: "POST", cauth: true, body: JSON.stringify({ job_id: j.id }) });
+        document.querySelector(".detail .panel").innerHTML =
+          `<h2>Apply for this role</h2><p class="msg">Application sent to ${esc(j.company)} with your résumé. A confirmation is on its way to your inbox.</p>`;
+      } catch (err) {
+        slot.insertAdjacentHTML("beforeend", `<p class="msg error">${esc(err.message)}</p>`);
+        e.target.disabled = false;
+        e.target.textContent = "Quick apply as " + (me.name || me.email);
+      }
+    });
+  }
+
   // ---------- router ----------
   function updateNav() {
     document.getElementById("nav-dashboard").hidden = !key();
@@ -925,7 +1125,7 @@
     if (pathJob && h) history.replaceState(null, "", "/#" + h);
     if (!h) h = pathJob ? `job-${pathJob[1]}` : "home";
     if (h === "employers") h = "post";
-    const section = h.startsWith("job-") ? "jobs" : h.startsWith("edit-") ? "dashboard" : h;
+    const section = h.startsWith("job-") ? "jobs" : h.startsWith("edit-") ? "dashboard" : h === "profile" ? "matches" : h;
     document.querySelectorAll("[data-nav]").forEach((a) => {
       if (a.dataset.nav === section) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
@@ -937,6 +1137,8 @@
     else if (h === "post") viewPost();
     else if (h === "welcome") viewWelcome();
     else if (h === "dashboard") viewDashboard();
+    else if (h === "profile") viewProfile();
+    else if (h === "matches") viewMatches();
     else if (h === "admin") viewAdmin();
     else viewHome();
     window.scrollTo(0, 0);
@@ -946,8 +1148,9 @@
   async function handleEmailLinks() {
     const params = new URLSearchParams(location.search);
     const login = params.get("login");
+    const clogin = params.get("clogin");
     const alerts = params.get("alerts");
-    if (!login && !alerts) return;
+    if (!login && !clogin && !alerts) return;
     history.replaceState(null, "", location.pathname + location.hash);
     if (login) {
       try {
@@ -955,6 +1158,14 @@
         store.set("bankstack.key", r.token);
         if (!location.hash) history.replaceState(null, "", location.pathname + "#dashboard");
         state.pendingFlash = [`Signed in as ${r.company}.`];
+      } catch (err) { state.pendingFlash = [err.message, true]; }
+    }
+    if (clogin) {
+      try {
+        const r = await api("/api/candidate-auth/verify", { method: "POST", body: JSON.stringify({ token: clogin }) });
+        store.set("bankjobz.ck", r.token);
+        if (!location.hash) history.replaceState(null, "", location.pathname + "#profile");
+        state.pendingFlash = [`Signed in${r.name ? " as " + r.name : ""}.${r.has_resume ? "" : " Add your résumé to unlock ranked matches."}`];
       } catch (err) { state.pendingFlash = [err.message, true]; }
     }
     if (alerts) {

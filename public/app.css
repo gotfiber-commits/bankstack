@@ -389,3 +389,24 @@ tr.is-new td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   tr.is-new td:first-child { box-shadow: none; }
   tr.is-new { box-shadow: inset 3px 0 0 var(--accent); padding-left: 0.6rem; }
 }
+
+/* ---------- Candidate matches & quick apply ---------- */
+.match-list li.match-row { display: flex; gap: 1.1rem; align-items: flex-start; padding: 0.95rem 0.25rem; }
+.match-row .job-main { flex: 1; min-width: 0; display: grid; gap: 0.3rem; }
+.match-row .job-title { text-decoration: none; color: inherit; }
+.match-row .job-title:hover { color: var(--accent); }
+.match-score { text-align: center; min-width: 4.4rem; display: grid; gap: 0.1rem; padding-top: 0.15rem; }
+.match-score b { font: 800 1.55rem var(--font-display); font-variant-numeric: tabular-nums; line-height: 1; }
+.match-score span { font: 500 0.62rem var(--font-mono); text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); }
+.tier-strong b { color: var(--accent); }
+.tier-good b { color: var(--brass); }
+.tier-possible b { color: var(--muted); }
+.match-act { align-self: center; white-space: nowrap; }
+.match-row.is-applied { opacity: 0.7; }
+.qa-box { display: grid; gap: 0.45rem; padding: 0.9rem; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
+.applied-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; font-size: 0.9rem; }
+@media (max-width: 640px) {
+  .match-list li.match-row { flex-wrap: wrap; }
+  .match-act { width: 100%; }
+  .match-act .btn { width: 100%; }
+}

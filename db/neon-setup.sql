@@ -103,6 +103,31 @@ UPDATE alert_subscriptions
    SET categories = ARRAY(SELECT DISTINCT CASE c WHEN 'data-engineering' THEN 'data-analytics' WHEN 'analytics' THEN 'data-analytics' WHEN 'architecture' THEN 'data-analytics' WHEN 'software' THEN 'technology' WHEN 'security' THEN 'technology' WHEN 'risk-tech' THEN 'risk-compliance' ELSE c END FROM unnest(categories) AS c)
  WHERE categories && ARRAY['data-engineering','analytics','architecture','software','security','risk-tech']::text[];
 
+-- Candidate profiles (Nov 2026): one profile, résumé on file, quick apply, ranked matches.
+CREATE TABLE IF NOT EXISTS candidates (
+  id                  BIGSERIAL PRIMARY KEY,
+  name                TEXT NOT NULL DEFAULT '',
+  email               TEXT NOT NULL UNIQUE,
+  phone               TEXT,
+  linkedin_url        TEXT,
+  location            TEXT,
+  work_mode_pref      TEXT NOT NULL DEFAULT 'any' CHECK (work_mode_pref IN ('any','onsite','hybrid','remote')),
+  categories          TEXT[] NOT NULL DEFAULT '{}',   -- departments they'd work in
+  summary             TEXT,                           -- experience in their own words
+  api_token           TEXT UNIQUE,                    -- ck_… bearer token
+  login_token_hash    TEXT,                           -- emailed sign-in link (sha256), single use
+  login_token_expires TIMESTAMPTZ,
+  resume_key          TEXT,                           -- file in Netlify Blobs
+  resume_name         TEXT,
+  resume_type         TEXT,
+  resume_size         INTEGER,
+  resume_text         TEXT,                           -- extracted at upload, used for matching
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS candidate_id BIGINT REFERENCES candidates(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS applications_candidate_idx ON applications (candidate_id);
+
 -- 25 real seed listings (sourced October 2026). Re-running skips ones already loaded.
 INSERT INTO jobs (title, company, institution_type, location, work_mode, employment_type, category, salary_min, salary_max, summary, apply_url, source_name, source_url, expires_at) VALUES
   ('Assistant Vice President, Data Engineer', 'Bank of America', 'bank', 'Charlotte, NC', 'onsite', 'full-time', 'data-analytics', NULL, NULL, 'Builds and delivers complex data solutions for technology and business teams in a 1st-shift, full-time role. Requisition JR-26021243.', 'https://www.themuse.com/jobs/bankofamerica/assistant-vice-president-data-engineer-762d0b', 'The Muse', 'https://www.themuse.com/jobs/bankofamerica/assistant-vice-president-data-engineer-762d0b', now() + interval '30 days'),

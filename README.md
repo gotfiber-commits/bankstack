@@ -5,6 +5,9 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 ## What it does
 
 **Job seekers**
+- **Profiles & one-click apply**: a free candidate profile (passwordless email sign-in, same as employers), with departments, location, work preference and a résumé on file.
+- **Ranked matches**: the résumé's text is extracted at upload (PDF/DOCX) and every open job is scored against it — banking-domain phrases by department, word overlap weighted by rarity, plus the candidate's own picks. Each match shows a 0–98 score, a tier and the reasons. No outside AI services; deterministic and explainable (`netlify/lib/match.mjs`).
+- **Quick apply**: one click sends the saved profile and a copy of the résumé — on job pages and straight from the matches list. Replacing the résumé later never changes past applications.
 - Landing page, then **View current positions**: search, filter by specialty, institution type and on-site/hybrid/remote.
 - Every job has a real, shareable URL (`/jobs/123`) with its own page title and link preview.
 - Apply with name, email, phone, LinkedIn, a **résumé upload** (PDF or Word, up to 5 MB, checked to be a real document) and a note. They get a confirmation email.
@@ -97,6 +100,11 @@ npm run test:browser      # 31 checks clicking through the real pages, desktop a
 | GET | `/api/session?session_id=` | after Stripe → `{ company, token, job }` |
 | POST | `/api/stripe-webhook` | Stripe only |
 | POST | `/api/auth/request`, `/api/auth/verify` | emailed sign-in link |
+| POST | `/api/candidate-auth/request`, `/verify` | candidate sign-in links |
+| GET/PUT | `/api/candidate` | Bearer ck_ token: profile + their applications |
+| POST/GET | `/api/candidate/resume` | upload (extracts text) / download own résumé |
+| GET | `/api/candidate/matches` | every open job ranked, with scores and reasons |
+| POST | `/api/candidate/apply` | one-click apply `{ job_id, cover_note? }` |
 | GET | `/api/employer` | Bearer key: postings, applicants |
 | GET/PUT | `/api/employer/jobs/:id` | load / edit a posting |
 | POST | `/api/employer/jobs/:id/pay` · `/cancel` · `/resume` | billing actions |

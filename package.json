@@ -14,6 +14,8 @@
   "dependencies": {
     "@neondatabase/serverless": "^1.0.0",
     "@netlify/blobs": "^8.1.0",
+    "fflate": "^0.8.2",
+    "pdf-parse": "^1.1.1",
     "pg": "^8.13.1",
     "stripe": "^18.0.0"
   },
