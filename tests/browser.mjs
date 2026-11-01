@@ -46,14 +46,14 @@ try {
   const emp = await newPage();
   await emp.goto(BASE + "/");
   await emp.waitForSelector(".home-hero h1");
-  check("headline shows", (await emp.textContent(".home-hero h1")).includes("banking technology"));
+  check("headline shows", (await emp.textContent(".home-hero h1")).includes("banks and credit unions"));
   check("live figures come from the database", (await emp.textContent(".figures-grid strong")) === "25");
   await shot(emp, "01-home");
   await emp.click("text=View current positions");
   await emp.waitForSelector(".ledger li");
   check("View current positions opens the board", (await emp.locator(".ledger .job-row").count()) === 25);
-  await emp.click('.cat-chip[data-cat="architecture"]');
-  check("specialty chip filters the list", (await emp.locator(".ledger .job-row").count()) === 5);
+  await emp.click('.cat-chip[data-cat="data-analytics"]');
+  check("department chip filters the list", (await emp.locator(".ledger .job-row").count()) === 19);
   await emp.fill("#f-q", "mission");
   check("search narrows it further", (await emp.locator(".ledger .job-row").count()) === 1);
   await shot(emp, "02-jobs");
@@ -68,7 +68,7 @@ try {
   await emp.fill("#p-title", "Senior Data Architect");
   await emp.fill("#p-location", "Florence, AL");
   await emp.selectOption("#p-mode", "hybrid");
-  await emp.selectOption("#p-cat", "architecture");
+  await emp.selectOption("#p-cat", "data-analytics");
   await emp.fill("#p-min", "115,000");
   await emp.fill("#p-max", "140,000");
   await emp.fill("#p-summary", "Own the enterprise data model across core, lending and call reporting.");
@@ -105,7 +105,7 @@ try {
   await cand.click("text=← All positions");
   await cand.waitForSelector(".ledger .job-row");
   check("nav from a /jobs page goes back to the board", (await cand.locator(".ledger .job-row").count()) === 26 && new URL(cand.url()).pathname === "/");
-  await cand.locator("#alerts-form .chip-check", { hasText: "Data architecture" }).click();
+  await cand.locator("#alerts-form .chip-check", { hasText: "Data & analytics" }).click();
   await cand.fill("#al-email", "jordan@example.test");
   await cand.click("text=Send me alerts");
   await cand.waitForSelector("#alerts-msg:not([hidden])");

@@ -44,11 +44,11 @@ export default async (req) => {
     const link = `${base}/api/alerts/confirm?token=${sub.token}`;
     await sendEmail({
       to: email,
-      subject: "Confirm your BankStack job alerts",
-      text: `Confirm your weekly banking tech job alerts: ${link}`,
+      subject: "Confirm your BankJobz job alerts",
+      text: `Confirm your weekly banking job alerts: ${link}`,
       html: layout({
         heading: "Confirm your job alerts",
-        paragraphs: ["Confirm and we'll email you once a week with new tech and data roles at banks and credit unions.",
+        paragraphs: ["Confirm and we'll email you once a week with new jobs at banks and credit unions.",
           "If you didn't sign up, ignore this email and you won't hear from us."],
         button: { label: "Confirm alerts", url: link },
       }),

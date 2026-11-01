@@ -5,20 +5,28 @@
   const PRICE = "$99";
 
   const CATEGORIES = {
-    "data-engineering": "Data engineering",
-    "software": "Software",
-    "analytics": "Analytics & BI",
-    "architecture": "Data architecture",
-    "security": "Security",
-    "risk-tech": "Tech risk",
+    "branch-retail": "Branch & retail",
+    "lending-credit": "Lending & credit",
+    "commercial-banking": "Commercial banking",
+    "operations": "Operations",
+    "risk-compliance": "Risk & compliance",
+    "finance-accounting": "Finance & accounting",
+    "wealth-trust": "Wealth & trust",
+    "technology": "Technology & IT",
+    "data-analytics": "Data & analytics",
+    "leadership-admin": "Leadership & support",
   };
   const CATEGORY_BLURB = {
-    "data-engineering": "Pipelines, warehouses and lakehouses that feed regulatory and customer reporting.",
-    "software": "Digital banking, payments, trading and integration platforms.",
-    "analytics": "BI, dashboards and customer insight for lines of business.",
-    "architecture": "Enterprise data models, core-system integration and governance.",
-    "security": "Data loss prevention, identity and cyber defense.",
-    "risk-tech": "Technology and data risk, controls and exam readiness.",
+    "branch-retail": "Tellers, member service reps, personal bankers and branch managers.",
+    "lending-credit": "Loan officers, underwriters, processors and mortgage teams.",
+    "commercial-banking": "Relationship managers, treasury management and business banking.",
+    "operations": "Deposit operations, payments, card services and collections.",
+    "risk-compliance": "BSA/AML, compliance, audit, fraud and enterprise risk.",
+    "finance-accounting": "Accounting, treasury, financial reporting and planning.",
+    "wealth-trust": "Financial advisors, trust officers and investment services.",
+    "technology": "Software, infrastructure, cybersecurity and IT support.",
+    "data-analytics": "Data engineering, reporting, BI and data architecture.",
+    "leadership-admin": "Executives, HR, marketing, facilities and administration.",
   };
   const MODES = { onsite: "On-site", hybrid: "Hybrid", remote: "Remote" };
   const EMPLOYMENT = { "full-time": "Full-time", "part-time": "Part-time", contract: "Contract", internship: "Internship" };
@@ -169,13 +177,13 @@
   // Role fields shared by "Post a job", "Edit posting" and the admin's "Add a sourced listing".
   function roleFields(j = {}, prefix = "p") {
     return `
-      <div class="field"><label for="${prefix}-title">Job title</label><input id="${prefix}-title" name="title" required placeholder="Senior Data Engineer" value="${esc(j.title)}"></div>
+      <div class="field"><label for="${prefix}-title">Job title</label><input id="${prefix}-title" name="title" required placeholder="Senior Loan Officer" value="${esc(j.title)}"></div>
       <div class="row-2">
         <div class="field"><label for="${prefix}-location">Location</label><input id="${prefix}-location" name="location" required placeholder="Birmingham, AL" value="${esc(j.location)}"></div>
         <div class="field"><label for="${prefix}-mode">Arrangement</label><select id="${prefix}-mode" name="work_mode">${options(MODES, j.work_mode)}</select></div>
       </div>
       <div class="row-2">
-        <div class="field"><label for="${prefix}-cat">Specialty</label><select id="${prefix}-cat" name="category">${options(CATEGORIES, j.category)}</select></div>
+        <div class="field"><label for="${prefix}-cat">Department</label><select id="${prefix}-cat" name="category">${options(CATEGORIES, j.category)}</select></div>
         <div class="field"><label for="${prefix}-emp">Employment</label><select id="${prefix}-emp" name="employment_type">${options(EMPLOYMENT, j.employment_type)}</select></div>
       </div>
       <div class="row-2">
@@ -183,7 +191,7 @@
         <div class="field"><label for="${prefix}-max">Salary to (USD/yr)</label><input id="${prefix}-max" name="salary_max" inputmode="numeric" placeholder="125,000" value="${esc(j.salary_max ?? "")}"></div>
       </div>
       <div class="field"><label for="${prefix}-summary">Summary</label><input id="${prefix}-summary" name="summary" maxlength="400" required placeholder="One or two sentences shown in the job list" value="${esc(j.summary)}"></div>
-      <div class="field"><label for="${prefix}-desc">Full description</label><textarea id="${prefix}-desc" name="description" rows="7" placeholder="Responsibilities, systems you use, qualifications">${esc(j.description)}</textarea></div>
+      <div class="field"><label for="${prefix}-desc">Full description</label><textarea id="${prefix}-desc" name="description" rows="7" placeholder="Responsibilities, qualifications, schedule and benefits">${esc(j.description)}</textarea></div>
       <div class="field"><label for="${prefix}-apply">Apply link (optional)</label><input id="${prefix}-apply" name="apply_url" type="url" placeholder="https://your-ats.example/job/123" value="${esc(j.apply_url)}"><span class="hint">Leave blank to collect applications here, with résumés, in your dashboard.</span></div>`;
   }
 
@@ -194,10 +202,10 @@
         <div>
           <p class="eyebrow">Job alerts</p>
           <h2 id="alerts-title">Get new roles by email, once a week.</h2>
-          <p class="source-note">Pick the specialties you care about, or leave them all off for everything. One click to unsubscribe.</p>
+          <p class="source-note">Pick the departments you care about, or leave them all off for everything. One click to unsubscribe.</p>
         </div>
         <form class="form" id="alerts-form" novalidate>
-          <fieldset class="chip-set"><legend class="visually-hidden">Specialties</legend>
+          <fieldset class="chip-set"><legend class="visually-hidden">Departments</legend>
             ${Object.entries(CATEGORIES).map(([k, v]) => `<label class="chip-check"><input type="checkbox" name="categories" value="${k}"${k === preselect ? " checked" : ""}><span>${esc(v)}</span></label>`).join("")}
           </fieldset>
           <div class="inline-form">
@@ -246,9 +254,9 @@
         <canvas id="guilloche" aria-hidden="true"></canvas>
         <div class="wrap home-hero-grid">
           <div class="home-hero-copy">
-            <p class="eyebrow">Banks · Credit unions · Their technology teams</p>
-            <h1>The job board for <em>banking technology</em> and data.</h1>
-            <p class="lede">BankStack lists only tech and data roles at financial institutions: data engineers, architects, developers, analysts and security staff. Candidates find roles built for their background. Banks reach people who already know core systems, call reports and regulatory data.</p>
+            <p class="eyebrow">Banks · Credit unions · Every department</p>
+            <h1>The job board for <em>banks and credit unions</em>.</h1>
+            <p class="lede">BankJobz lists jobs at banks and credit unions only, from tellers and loan officers to compliance, operations, technology and leadership. Candidates find roles that value banking experience. Banks reach people who already know the industry.</p>
             <div class="cta-row">
               <a class="btn btn-lg" href="#jobs">View current positions</a>
               <a class="btn btn-lg secondary" href="#post">Post a job · ${PRICE}/mo</a>
@@ -270,9 +278,9 @@
 
       <section class="figures">
         <div class="wrap figures-grid">
-          <div><strong>${jobs.length}</strong><span>open tech &amp; data roles</span></div>
+          <div><strong>${jobs.length}</strong><span>open banking jobs</span></div>
           <div><strong>${institutions}</strong><span>banks and credit unions hiring</span></div>
-          <div><strong>${Object.keys(counts).length}</strong><span>specialties covered</span></div>
+          <div><strong>${jobs.filter((j) => j.work_mode !== "onsite").length}</strong><span>remote or hybrid roles</span></div>
           <div><strong>${withPay.length}</strong><span>listings with posted pay</span></div>
         </div>
       </section>
@@ -282,13 +290,13 @@
           <div class="audience">
             <p class="eyebrow">For job seekers</p>
             <h2>Roles that value banking experience.</h2>
-            <p>Every listing is a technology or data job inside a financial institution. Filter by specialty, institution type and on-site, hybrid or remote, then apply with your résumé in a couple of minutes.</p>
+            <p>Every listing is a job at a bank or credit union. Filter by department, institution type and on-site, hybrid or remote, then apply with your résumé in a couple of minutes.</p>
             <a class="text-link" href="#jobs">Browse positions →</a>
           </div>
           <div class="audience">
             <p class="eyebrow">For banks and credit unions</p>
             <h2>Reach candidates who already speak your language.</h2>
-            <p>Skip general boards full of applicants who've never touched a core platform. Post a role for ${PRICE} a month, review applicants and résumés in your dashboard, and stop whenever it's filled.</p>
+            <p>Skip general job boards full of applicants who've never worked in a bank. Post a role for ${PRICE} a month, review applicants and résumés in your dashboard, and stop whenever it's filled.</p>
             <a class="text-link" href="#post">Post a job →</a>
           </div>
         </div>
@@ -296,13 +304,13 @@
 
       <section class="band alt">
         <div class="wrap">
-          <p class="eyebrow">Specialties</p>
-          <h2 class="section-title">Browse by the work you do</h2>
+          <p class="eyebrow">Departments</p>
+          <h2 class="section-title">Browse by department</h2>
           <div class="spec-grid">
             ${Object.entries(CATEGORIES).map(([k, v]) => `
               <button class="spec" data-cat="${k}" type="button">
                 <span class="spec-name">${esc(v)}</span>
-                <span class="spec-count">${counts[k] || 0} open</span>
+                ${counts[k] ? `<span class="spec-count">${counts[k]} open</span>` : ""}
                 <span class="spec-blurb">${esc(CATEGORY_BLURB[k])}</span>
               </button>`).join("")}
           </div>
@@ -338,7 +346,7 @@
 
       <section class="closing">
         <div class="wrap closing-inner">
-          <h2>Looking for your next role in banking tech?</h2>
+          <h2>Looking for your next role in banking?</h2>
           <a class="btn btn-lg light" href="#jobs">View current positions</a>
         </div>
       </section>`;
@@ -373,8 +381,8 @@
         <canvas id="guilloche" aria-hidden="true"></canvas>
         <div class="wrap">
           <h1>Current positions</h1>
-          <p>Tech and data openings at banks and credit unions. Direct postings come from the employer; the rest are gathered from public job sites and link to the original.</p>
-          <div class="stat-row" role="group" aria-label="Filter by specialty">
+          <p>Openings at banks and credit unions. Direct postings come from the employer; the rest are gathered from public job sites and link to the original.</p>
+          <div class="stat-row" role="group" aria-label="Filter by department">
             ${Object.entries(CATEGORIES).filter(([k]) => counts[k]).map(([k, v]) =>
               `<button class="cat-chip" data-cat="${k}" aria-pressed="false" type="button">${esc(v)} <b>${counts[k]}</b></button>`).join("")}
           </div>
@@ -425,7 +433,7 @@
             <dt>Location</dt><dd>${esc(j.location)}</dd>
             <dt>Arrangement</dt><dd>${esc(MODES[j.work_mode] || j.work_mode)}</dd>
             <dt>Employment</dt><dd>${esc(EMPLOYMENT[j.employment_type] || "Full-time")}</dd>
-            <dt>Specialty</dt><dd>${esc(CATEGORIES[j.category] || j.category)}</dd>
+            <dt>Department</dt><dd>${esc(CATEGORIES[j.category] || j.category)}</dd>
             <dt>Pay</dt><dd class="salary">${pay ? esc(pay) + " per year" : "Not listed"}</dd>
             ${j.posted_at ? `<dt>Posted</dt><dd>${esc(fmtDate(j.posted_at))}</dd>` : ""}
           </dl>

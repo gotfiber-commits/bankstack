@@ -78,7 +78,7 @@ async function pay(session) {
 
 const jobFields = {
   title: "Senior Data Architect", location: "Florence, AL", work_mode: "hybrid", employment_type: "full-time",
-  category: "architecture", salary_min: "115,000", salary_max: "140000",
+  category: "data-analytics", salary_min: "115,000", salary_max: "140000",
   summary: "Own the enterprise data model across core, lending and the call report pipeline.",
   description: "You'll lead our move to a lakehouse.\nExperience with Jack Henry or Fiserv cores is a plus.",
 };
@@ -94,8 +94,8 @@ try {
   check("home page serves the app", r.status === 200 && String(r.data).includes('id="view"'));
   r = await call("GET", "/api/jobs");
   check("25 seeded listings are public", r.data.jobs?.length === 25, r.data.jobs?.length);
-  r = await call("GET", "/api/jobs?q=regions&category=data-engineering");
-  check("search + specialty filter", r.data.jobs.length === 3 && r.data.jobs.every((j) => j.company === "Regions Bank"), r.data.jobs.map((j) => j.title));
+  r = await call("GET", "/api/jobs?q=regions&category=data-analytics");
+  check("search + specialty filter", r.data.jobs.length === 4 && r.data.jobs.every((j) => j.company === "Regions Bank"), r.data.jobs.map((j) => j.title));
   r = await call("GET", "/api/jobs?institution_type=credit-union");
   check("institution filter (credit unions)", r.data.jobs.length === 6, r.data.jobs.length);
   r = await call("GET", "/api/jobs/99999");
@@ -229,7 +229,7 @@ try {
   check("cards & invoices opens the Stripe portal", r.status === 200 && r.data.url?.includes("billing.stripe.test"));
 
   // second posting by a signed-in employer, left unpaid, then paid from the dashboard
-  r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "BI Developer", category: "analytics" } });
+  r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Branch Manager", category: "branch-retail" } });
   const jobA2 = r.data.job_id;
   check("signed-in employer posts a second job", r.status === 200 && !!jobA2);
   r = await call("POST", `/api/employer/jobs/${jobA2}/pay`, { token: keyA });
@@ -239,7 +239,7 @@ try {
 
   // ================================================================
   section("Privacy between employers");
-  r = await call("POST", "/api/checkout", { body: { ...jobFields, title: "Cloud Engineer", category: "software", company: "Tennessee Valley CU", email: "jobs@tvcu.test", institution_type: "credit-union" } });
+  r = await call("POST", "/api/checkout", { body: { ...jobFields, title: "Mortgage Loan Officer", category: "lending-credit", company: "Tennessee Valley CU", email: "jobs@tvcu.test", institution_type: "credit-union" } });
   const jobB = r.data.job_id;
   await pay(lastSession());
   const keyB = (await call("GET", `/api/session?session_id=${lastSession().id}`)).data.token;
@@ -289,7 +289,7 @@ try {
   // ================================================================
   section("Job alerts");
   outbox().length = 0;
-  r = await call("POST", "/api/alerts", { body: { email: "alex@example.test", categories: ["architecture", "nonsense"] } });
+  r = await call("POST", "/api/alerts", { body: { email: "alex@example.test", categories: ["data-analytics", "software"] } });
   const confirmLink = lastEmailTo("alex@example.test")?.text.match(/https?:\S+confirm\?token=\w+/)?.[0];
   check("alert signup sends a confirmation email", r.status === 200 && !!confirmLink);
   r = await runAlertDigest(BASE);
@@ -300,13 +300,13 @@ try {
   r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Data Governance Architect" } });
   const jobA3 = r.data.job_id;
   await pay(lastSession());
-  await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Pen Tester", category: "security" } });
+  await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Teller", category: "branch-retail" } });
   await pay(lastSession());
   outbox().length = 0;
   r = await runAlertDigest(BASE);
   const digest = lastEmailTo("alex@example.test");
   check("weekly digest sends new matching roles", r.sent === 1 && digest?.text.includes("Data Governance Architect"));
-  check("digest leaves out specialties they didn't pick", !digest?.text.includes("Pen Tester"));
+  check("digest leaves out departments they didn't pick", !digest?.text.includes("Teller"));
   check("digest links to real job pages", digest?.text.includes(`${BASE}/jobs/${jobA3}`));
   r = await runAlertDigest(BASE);
   check("same jobs aren't sent twice", r.sent === 0);
@@ -324,11 +324,11 @@ try {
     r.status === 200 && r.data.paid_live === 3 && r.data.mrr_cents === 3 * 9900 && r.data.unpaid === 1 && r.data.employer_count === 2, {
       paid_live: r.data.paid_live, mrr: r.data.mrr_cents, unpaid: r.data.unpaid, employers: r.data.employer_count });
   r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
-    ...jobFields, title: "ETL Developer", category: "data-engineering", company: "Gone Bank", source_url: `${BASE}/no-such-posting`, source_name: "Test" } });
+    ...jobFields, title: "BSA Analyst", category: "risk-compliance", company: "Gone Bank", source_url: `${BASE}/no-such-posting`, source_name: "Test" } });
   const goneId = r.data.id;
   check("admin adds a sourced listing", r.status === 201);
   r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
-    ...jobFields, title: "Report Writer", category: "analytics", company: "Live Bank", source_url: `${BASE}/index.html` } });
+    ...jobFields, title: "Staff Accountant", category: "finance-accounting", company: "Live Bank", source_url: `${BASE}/index.html` } });
   const liveId = r.data.id;
   r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: { ...jobFields, company: "Live Bank", source_url: `${BASE}/index.html` } });
   check("duplicate source link is refused", r.status === 409);

@@ -41,7 +41,7 @@ export function stripe() {
 }
 
 export const PRICE_CENTS = 9900;
-export const BRAND = "BankStack Jobs";
+export const BRAND = "BankJobz";
 
 export const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -55,7 +55,9 @@ export function siteUrl(req) {
   return process.env.URL || new URL(req.url).origin;
 }
 
-export const CATEGORIES = ["data-engineering", "software", "analytics", "architecture", "security", "risk-tech"];
+export const CATEGORIES = [
+  "branch-retail", "lending-credit", "commercial-banking", "operations", "risk-compliance", "finance-accounting", "wealth-trust", "technology", "data-analytics", "leadership-admin",
+];
 export const WORK_MODES = ["onsite", "hybrid", "remote"];
 export const INSTITUTION_TYPES = ["bank", "credit-union", "fintech", "other"];
 export const EMPLOYMENT_TYPES = ["full-time", "part-time", "contract", "internship"];
@@ -116,7 +118,7 @@ export function validateJob(b) {
   };
   if (!job.title) return { error: "Add a job title." };
   if (!job.location) return { error: "Add a location." };
-  if (!CATEGORIES.includes(job.category)) return { error: "Pick a specialty." };
+  if (!CATEGORIES.includes(job.category)) return { error: "Pick a department." };
   if (!job.summary) return { error: "Add a one- or two-sentence summary." };
   if (job.apply_url && !isUrl(job.apply_url)) return { error: "The apply link should start with https://" };
   if (job.salary_min && job.salary_max && job.salary_min > job.salary_max) {

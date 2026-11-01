@@ -38,7 +38,7 @@ export default async (req) => {
           await sendEmail({
             to: row.email,
             subject: `Your posting is live: ${row.title}`,
-            text: `${row.title} is live on BankStack and renews monthly at $99 until you cancel it.\n\nView it: ${base}/jobs/${row.id}\nDashboard: ${base}/#dashboard\n\nLost your posting key? Use "Email me a sign-in link" on ${base}/#post`,
+            text: `${row.title} is live on BankJobz and renews monthly at $99 until you cancel it.\n\nView it: ${base}/jobs/${row.id}\nDashboard: ${base}/#dashboard\n\nLost your posting key? Use "Email me a sign-in link" on ${base}/#post`,
             html: layout({
               heading: "Your posting is live",
               paragraphs: [`<b>${esc(row.title)}</b> is now listed for ${esc(row.company)} as a Direct posting.`,

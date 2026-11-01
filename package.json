@@ -1,9 +1,9 @@
 {
-  "name": "bankstack-jobs",
+  "name": "bankjobz",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Niche job board for tech and data roles at banks and credit unions",
+  "description": "Job board for every job at banks and credit unions",
   "scripts": {
     "dev": "netlify dev",
     "db:seed": "node scripts/seed.mjs",

@@ -22,7 +22,7 @@ export async function runAlertDigest(base = process.env.URL || "http://localhost
     const unsubscribe = `${base}/api/alerts/unsubscribe?token=${s.token}`;
     await sendEmail({
       to: s.email,
-      subject: `${jobs.length} new banking tech ${jobs.length === 1 ? "role" : "roles"} this week`,
+      subject: `${jobs.length} new banking ${jobs.length === 1 ? "role" : "roles"} this week`,
       text: jobs.map((j) => `${j.title} — ${j.company}, ${j.location}\n${base}/jobs/${j.id}`).join("\n\n")
         + `\n\nUnsubscribe: ${unsubscribe}`,
       html: layout({
@@ -55,7 +55,7 @@ export async function runLinkCheck({ limit = 40, timeoutMs = 6000 } = {}) {
       try {
         const res = await fetch(job.source_url, {
           method, redirect: "follow", signal: AbortSignal.timeout(timeoutMs),
-          headers: { "user-agent": "BankStackLinkCheck/1.0 (+job board link checker)" },
+          headers: { "user-agent": "BankJobzLinkCheck/1.0 (+job board link checker)" },
         });
         status = res.status;
         if (method === "HEAD" && (status === 405 || status === 501)) continue;

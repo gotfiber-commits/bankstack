@@ -23,7 +23,7 @@ export default async (req) => {
       const url = `${siteUrl(req)}/?login=${token}#dashboard`;
       await sendEmail({
         to: email,
-        subject: "Your BankStack sign-in link",
+        subject: "Your BankJobz sign-in link",
         text: `Sign in to your ${employer.company} dashboard: ${url}\n\nThe link works once and expires in 30 minutes.`,
         html: layout({
           heading: "Sign in to your dashboard",

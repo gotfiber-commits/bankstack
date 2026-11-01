@@ -1,6 +1,6 @@
-# BankStack Jobs
+# BankJobz
 
-A niche job board for technology and data roles at banks and credit unions. Employers pay **$99 per posting, per month**.
+A job board for every kind of job at banks and credit unions: branch, lending, commercial, operations, risk and compliance, finance, wealth, technology, data and leadership. Employers pay **$99 per posting, per month**.
 
 ## What it does
 
@@ -42,11 +42,15 @@ scripts/seed.mjs         creates the schema and loads the 25 seed jobs
 tests/                   e2e.mjs (81 API checks), browser.mjs (31 checks in real Chromium), fake Stripe, local server
 ```
 
+## Updating an existing database
+
+If your Neon database was set up before the switch to departments, paste `db/migrate-all-bank-jobs.sql` into the Neon SQL Editor and click Run. It is safe to run more than once.
+
 ## Launch checklist
 
 1. **Neon**: create a project; copy the pooled connection string.
 2. **Stripe** (test mode first):
-   - Product "BankStack job posting" with a **recurring $99.00/month** price → copy the `price_…` ID.
+   - Product "Job posting" with a **recurring $99.00/month** price → copy the `price_…` ID.
    - Settings → Billing → **Customer portal**: turn it on (cards, invoices, cancel).
 3. **Resend**: add and verify your domain, create an API key. `EMAIL_FROM` must use that domain.
 4. **Seed the database** from your computer:

@@ -1,4 +1,4 @@
--- BankStack Jobs schema (Postgres / Neon). Safe to run repeatedly.
+-- BankJobz schema (Postgres / Neon). Safe to run repeatedly.
 -- Billing model: $99 per job posting per month. Each employer-posted job has its own Stripe subscription.
 
 CREATE TABLE IF NOT EXISTS employers (
@@ -24,8 +24,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   work_mode              TEXT NOT NULL DEFAULT 'onsite' CHECK (work_mode IN ('onsite','hybrid','remote')),
   employment_type        TEXT NOT NULL DEFAULT 'full-time'
                            CHECK (employment_type IN ('full-time','part-time','contract','internship')),
-  category               TEXT NOT NULL CHECK (category IN
-                           ('data-engineering','software','analytics','architecture','security','risk-tech')),
+  category               TEXT NOT NULL,  -- allowed values: see jobs_category_check below
   salary_min             INTEGER,
   salary_max             INTEGER,
   summary                TEXT NOT NULL,
@@ -91,3 +90,12 @@ ALTER TABLE applications ADD COLUMN IF NOT EXISTS resume_name TEXT;
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS resume_type TEXT;
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS resume_size INTEGER;
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'new';
+
+-- Departments (Nov 2026): the board covers every bank and credit union job, not only tech.
+-- Maps the original tech-only categories onto the new departments. Safe to re-run.
+ALTER TABLE jobs DROP CONSTRAINT IF EXISTS jobs_category_check;
+UPDATE jobs SET category = CASE category WHEN 'data-engineering' THEN 'data-analytics' WHEN 'analytics' THEN 'data-analytics' WHEN 'architecture' THEN 'data-analytics' WHEN 'software' THEN 'technology' WHEN 'security' THEN 'technology' WHEN 'risk-tech' THEN 'risk-compliance' ELSE category END WHERE category IN ('data-engineering','analytics','architecture','software','security','risk-tech');
+ALTER TABLE jobs ADD CONSTRAINT jobs_category_check CHECK (category IN ('branch-retail','lending-credit','commercial-banking','operations','risk-compliance','finance-accounting','wealth-trust','technology','data-analytics','leadership-admin'));
+UPDATE alert_subscriptions
+   SET categories = ARRAY(SELECT DISTINCT CASE c WHEN 'data-engineering' THEN 'data-analytics' WHEN 'analytics' THEN 'data-analytics' WHEN 'architecture' THEN 'data-analytics' WHEN 'software' THEN 'technology' WHEN 'security' THEN 'technology' WHEN 'risk-tech' THEN 'risk-compliance' ELSE c END FROM unnest(categories) AS c)
+ WHERE categories && ARRAY['data-engineering','analytics','architecture','software','security','risk-tech']::text[];
