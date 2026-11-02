@@ -118,6 +118,9 @@
       state.demo = true;
     }
     document.getElementById("demo-banner").hidden = !state.demo;
+    // The directory is served by the live site's functions; the static preview has no /banks.
+    const banksLink = document.getElementById("nav-banks");
+    if (banksLink) banksLink.hidden = state.demo;
   }
 
   function filtered() {
