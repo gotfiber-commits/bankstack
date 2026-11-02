@@ -31,9 +31,22 @@
   const MODES = { onsite: "On-site", hybrid: "Hybrid", remote: "Remote" };
   const EMPLOYMENT = { "full-time": "Full-time", "part-time": "Part-time", contract: "Contract", internship: "Internship" };
   const INST = { bank: "Bank", "credit-union": "Credit union", fintech: "Fintech", other: "Other" };
+  // Mirrors netlify/lib/banking.mjs — the ids must match.
+  const CORE_SYSTEMS = {
+    "jack-henry-silverlake": "Jack Henry SilverLake", "jack-henry-cif2020": "Jack Henry CIF 20/20",
+    "symitar-episys": "Symitar Episys", "fiserv-dna": "Fiserv DNA", "fiserv-premier": "Fiserv Premier",
+    "fiserv-signature": "Fiserv Signature", "fis-horizon": "FIS Horizon", "fis-ibs": "FIS IBS",
+    "corelation-keystone": "Corelation KeyStone", "csi-nupoint": "CSI NuPoint",
+    "finastra-phoenix": "Finastra Phoenix", "temenos-transact": "Temenos Transact",
+  };
+  const LICENSES = {
+    "nmls": "NMLS (MLO)", "crcm": "CRCM", "cams": "CAMS", "cfe": "CFE", "ctfa": "CTFA", "cfa": "CFA",
+    "cpa": "CPA", "aap": "AAP", "sie": "SIE", "series-6": "Series 6", "series-7": "Series 7",
+    "series-63": "Series 63", "series-65": "Series 65/66",
+  };
   const STAGES = { new: "New", reviewing: "Reviewing", interview: "Interview", offer: "Offer", hired: "Hired", rejected: "Not a fit" };
 
-  const state = { jobs: [], demo: false, filters: { q: "", category: "", institution_type: "", work_mode: "" }, appFilter: "" };
+  const state = { jobs: [], demo: false, filters: { q: "", category: "", institution_type: "", work_mode: "", core_system: "", license: "" }, appFilter: "" };
   const view = document.getElementById("view");
 
   // ---------- helpers ----------
@@ -100,7 +113,8 @@
     } catch {
       const res = await fetch("seed-jobs.json");
       const seed = await res.json();
-      state.jobs = seed.map((j, i) => ({ ...j, id: i + 1, apply_url: j.source_url, direct: false }));
+      state.jobs = seed.map((j, i) => ({ ...j, id: i + 1, apply_url: j.source_url, direct: false,
+        core_systems: j.core_systems || [], licenses: j.licenses || [] }));
       state.demo = true;
     }
     document.getElementById("demo-banner").hidden = !state.demo;
@@ -113,6 +127,8 @@
       (!f.category || j.category === f.category) &&
       (!f.institution_type || j.institution_type === f.institution_type) &&
       (!f.work_mode || j.work_mode === f.work_mode) &&
+      (!f.core_system || (j.core_systems || []).includes(f.core_system)) &&
+      (!f.license || (j.licenses || []).includes(f.license)) &&
       (!q || [j.title, j.company, j.location, j.summary].join(" ").toLowerCase().includes(q)));
   }
 
@@ -194,7 +210,21 @@
       </div>
       <div class="field"><label for="${prefix}-summary">Summary</label><input id="${prefix}-summary" name="summary" maxlength="400" required placeholder="One or two sentences shown in the job list" value="${esc(j.summary)}"></div>
       <div class="field"><label for="${prefix}-desc">Full description</label><textarea id="${prefix}-desc" name="description" rows="7" placeholder="Responsibilities, qualifications, schedule and benefits">${esc(j.description)}</textarea></div>
-      <div class="field"><label for="${prefix}-apply">Apply link (optional)</label><input id="${prefix}-apply" name="apply_url" type="url" placeholder="https://your-ats.example/job/123" value="${esc(j.apply_url)}"><span class="hint">Leave blank to collect applications here, with résumés, in your dashboard.</span></div>`;
+      <div class="field"><label for="${prefix}-apply">Apply link (optional)</label><input id="${prefix}-apply" name="apply_url" type="url" placeholder="https://your-ats.example/job/123" value="${esc(j.apply_url)}"><span class="hint">Leave blank to collect applications here, with résumés, in your dashboard.</span></div>
+      <details class="banking-extra"${(j.core_systems || []).length || (j.licenses || []).length ? " open" : ""}>
+        <summary>Banking specifics (optional) — core system &amp; licenses</summary>
+        <div class="field"><label>Core banking system this role touches</label>
+          <div class="chip-set">${chipChecks("core_systems", CORE_SYSTEMS, j.core_systems)}</div>
+          <span class="hint">Candidates with hands-on experience on your core rank higher and can filter straight to you.</span></div>
+        <div class="field"><label>Licenses or certifications required or preferred</label>
+          <div class="chip-set">${chipChecks("licenses", LICENSES, j.licenses)}</div></div>
+      </details>`;
+  }
+
+  // A set of checkbox chips for an {id: label} map, with the given ids checked.
+  function chipChecks(name, map, checked = []) {
+    return Object.entries(map).map(([k, v]) =>
+      `<label class="chip-check"><input type="checkbox" name="${name}" value="${k}"${(checked || []).includes(k) ? " checked" : ""}><span>${esc(v)}</span></label>`).join("");
   }
 
   // ---------- job alerts ----------
@@ -300,6 +330,7 @@
             <p>Every listing is a job at a bank or credit union. Filter by department, institution type and on-site, hybrid or remote, then apply with your résumé in a couple of minutes.</p>
             <a class="text-link" href="#jobs">Browse positions →</a>
             <a class="text-link" href="#profile">Create a free profile and get jobs ranked for you →</a>
+            ${state.demo ? "" : `<a class="text-link" href="/banks">Look up any bank or credit union in the directory →</a>`}
           </div>
           <div class="audience">
             <p class="eyebrow">For banks and credit unions</p>
@@ -401,6 +432,8 @@
           <input class="search" id="f-q" type="search" placeholder="Search title, bank or city" value="${esc(f.q)}" aria-label="Search jobs">
           <select id="f-inst" aria-label="Institution type"><option value="">All institutions</option>${options({ bank: "Banks", "credit-union": "Credit unions", fintech: "Fintech" }, f.institution_type)}</select>
           <select id="f-mode" aria-label="Work arrangement"><option value="">Any arrangement</option>${options(MODES, f.work_mode)}</select>
+          <select id="f-core" aria-label="Core system"><option value="">Any core system</option>${options(CORE_SYSTEMS, f.core_system)}</select>
+          <select id="f-lic" aria-label="License"><option value="">Any license</option>${options(LICENSES, f.license)}</select>
         </div>
         <div class="result-count" id="result-count"></div>
         <ul class="ledger" id="ledger"></ul>
@@ -414,6 +447,8 @@
     document.getElementById("f-q").addEventListener("input", (e) => { state.filters.q = e.target.value; renderList(); });
     document.getElementById("f-inst").addEventListener("change", (e) => { state.filters.institution_type = e.target.value; renderList(); });
     document.getElementById("f-mode").addEventListener("change", (e) => { state.filters.work_mode = e.target.value; renderList(); });
+    document.getElementById("f-core").addEventListener("change", (e) => { state.filters.core_system = e.target.value; renderList(); });
+    document.getElementById("f-lic").addEventListener("change", (e) => { state.filters.license = e.target.value; renderList(); });
     renderList();
     bindAlerts();
     requestAnimationFrame(() => drawGuilloche(document.getElementById("guilloche")));
@@ -442,12 +477,14 @@
             <dt>Arrangement</dt><dd>${esc(MODES[j.work_mode] || j.work_mode)}</dd>
             <dt>Employment</dt><dd>${esc(EMPLOYMENT[j.employment_type] || "Full-time")}</dd>
             <dt>Department</dt><dd>${esc(CATEGORIES[j.category] || j.category)}</dd>
+            ${(j.core_systems || []).length ? `<dt>Core system</dt><dd>${j.core_systems.map((s) => esc(CORE_SYSTEMS[s] || s)).join(", ")}</dd>` : ""}
+            ${(j.licenses || []).length ? `<dt>Licenses</dt><dd>${j.licenses.map((s) => esc(LICENSES[s] || s)).join(", ")}</dd>` : ""}
             <dt>Pay</dt><dd class="salary">${pay ? esc(pay) + " per year" : "Not listed"}</dd>
             ${j.posted_at ? `<dt>Posted</dt><dd>${esc(fmtDate(j.posted_at))}</dd>` : ""}
           </dl>
           ${j.description ? `<div class="prose">${esc(j.description)}</div>` : ""}
           ${external ? `<p class="source-note">Found on ${esc(j.source_name)}. Listings we gather can close without notice, so confirm the role on the original posting.</p>` : ""}
-          <div><button class="linkish" id="copy-link" type="button">Copy link to this job</button></div>
+          <div><button class="linkish" id="save-job" type="button">☆ Save job</button> · <button class="linkish" id="copy-link" type="button">Copy link to this job</button></div>
         </article>
         <aside class="panel">
           <div id="qa-slot"></div>
@@ -476,7 +513,7 @@
       catch { e.target.textContent = url; }
     });
 
-    maybeQuickApply(j);
+    initCandidateBits(j);
     const form = document.getElementById("apply-form");
     if (!form) return;
     form.addEventListener("submit", async (e) => {
@@ -590,7 +627,10 @@
       e.preventDefault();
       const form = e.currentTarget;
       const msg = document.getElementById("post-msg");
-      const data = Object.fromEntries(new FormData(form));
+      const pfd = new FormData(form);
+      const data = Object.fromEntries(pfd);
+      data.core_systems = pfd.getAll("core_systems");
+      data.licenses = pfd.getAll("licenses");
       if (!signedIn && (!data.company.trim() || !/^\S+@\S+\.\S+$/.test(data.email))) {
         return showMsg(msg, "Enter your institution's name and a valid work email.", true);
       }
@@ -734,6 +774,18 @@
               : `<tr><td colspan="5" class="source-note">Applicants show up here, and in your inbox, as they apply.</td></tr>`}</tbody>
           </table></div>
         </section>
+        <section>
+          <h2 class="dash-title">Talent pool</h2>
+          <p class="source-note">Candidates who opted in, shown anonymously — no names or contact details. Invite one to a posting and they get an email with your role; you only learn who they are if they apply. Included while you have a live posting.</p>
+          <div class="filters talent-filters">
+            <select id="t-cat" aria-label="Department"><option value="">Any department</option>${options(CATEGORIES, "")}</select>
+            <input id="t-state" maxlength="2" placeholder="State, e.g. AL" aria-label="State" style="text-transform:uppercase">
+            <select id="t-core" aria-label="Core system"><option value="">Any core system</option>${options(CORE_SYSTEMS, "")}</select>
+            <select id="t-lic" aria-label="License"><option value="">Any license</option>${options(LICENSES, "")}</select>
+            <button class="btn secondary" id="t-load" type="button">Browse candidates</button>
+          </div>
+          <div id="talent-list" class="talent-list"></div>
+        </section>
       </div>`;
 
     const say = (t) => (document.getElementById("act-msg").textContent = t);
@@ -756,6 +808,53 @@
         viewDashboard();
       } catch (err) { b.disabled = false; say(err.message); }
     }));
+    document.getElementById("t-load").addEventListener("click", async () => {
+      const list = document.getElementById("talent-list");
+      list.innerHTML = `<p class="source-note">Looking through the pool…</p>`;
+      const params = new URLSearchParams();
+      const cat = document.getElementById("t-cat").value, st = document.getElementById("t-state").value.trim();
+      const core = document.getElementById("t-core").value, lic = document.getElementById("t-lic").value;
+      if (cat) params.set("category", cat);
+      if (st) params.set("state", st);
+      if (core) params.set("core_system", core);
+      if (lic) params.set("license", lic);
+      let r;
+      try { r = await api("/api/employer/talent?" + params, { auth: true }); }
+      catch (err) { list.innerHTML = `<p class="msg error">${esc(err.message)}</p>`; return; }
+      if (!r.candidates.length) {
+        list.innerHTML = `<p class="source-note">No candidates match those filters yet. The pool grows as job seekers opt in — try fewer filters or check back.</p>`;
+        return;
+      }
+      list.innerHTML = r.candidates.map((c) => `
+        <div class="talent-card">
+          <div class="t-main">
+            <b>${esc(c.location || "Location not given")}</b> · ${esc({ any: "Any arrangement", onsite: "On-site", hybrid: "Hybrid", remote: "Remote" }[c.work_mode_pref] || "")}${c.has_resume ? " · Résumé on file" : ""}
+            <span class="tags">${(c.categories || []).map((k) => `<span class="tag">${esc(CATEGORIES[k] || k)}</span>`).join("")}
+              ${(c.core_systems || []).map((k) => `<span class="tag direct">${esc(CORE_SYSTEMS[k] || k)}</span>`).join("")}
+              ${(c.licenses || []).map((k) => `<span class="tag">${esc(LICENSES[k] || k)}</span>`).join("")}</span>
+            ${c.summary ? `<p class="t-summary">${esc(c.summary)}</p>` : ""}
+          </div>
+          <div class="t-invite">
+            <select data-tjob aria-label="Posting to invite them to">${r.jobs.map((j) => `<option value="${j.id}"${(c.invited_job_ids || []).includes(j.id) ? " disabled" : ""}>${esc(j.title)}</option>`).join("")}</select>
+            <input data-tnote maxlength="200" placeholder="Optional note to the candidate">
+            <button class="btn" data-invite="${c.id}" type="button">Invite to apply</button>
+          </div>
+        </div>`).join("");
+      list.querySelectorAll("[data-invite]").forEach((b) => b.addEventListener("click", async () => {
+        const card = b.closest(".talent-card");
+        b.disabled = true;
+        b.textContent = "Inviting…";
+        try {
+          const res = await api(`/api/employer/talent/${b.dataset.invite}/invite`, { method: "POST", auth: true,
+            body: JSON.stringify({ job_id: card.querySelector("[data-tjob]").value, note: card.querySelector("[data-tnote]").value }) });
+          card.querySelector(".t-invite").innerHTML = `<span class="status-pill">${res.duplicate ? "Already invited" : "Invited — they'll get an email"}</span>`;
+        } catch (err) {
+          b.disabled = false;
+          b.textContent = "Invite to apply";
+          say(err.message);
+        }
+      }));
+    });
     view.querySelectorAll("[data-resume]").forEach((b) => b.addEventListener("click", () => downloadResume(b.dataset.resume, b.dataset.name, b)));
     view.querySelectorAll("select.stage").forEach((s) => s.addEventListener("change", async () => {
       s.disabled = true;
@@ -788,7 +887,10 @@
     document.getElementById("edit-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const form = e.currentTarget;
-      const data = Object.fromEntries(new FormData(form));
+      const efd = new FormData(form);
+      const data = Object.fromEntries(efd);
+      data.core_systems = efd.getAll("core_systems");
+      data.licenses = efd.getAll("licenses");
       const msg = document.getElementById("edit-msg");
       if (!data.title.trim() || !data.location.trim() || !data.summary.trim()) return showMsg(msg, "Add a job title, location and summary.", true);
       const btn = form.querySelector("button[type=submit]");
@@ -844,6 +946,11 @@
           <div><strong>${d.applications_7d}</strong><span>applications this week (${d.applications} total)</span></div>
           <div><strong>${d.alert_subscribers}</strong><span>alert subscribers</span></div>
           <div><strong>${d.open_jobs}</strong><span>jobs on the board</span></div>
+          <div><strong>${((d.directory?.banks || 0) + (d.directory?.credit_unions || 0)).toLocaleString()}</strong><span>institutions in the directory (${d.directory?.banks || 0} banks, ${d.directory?.credit_unions || 0} CUs)</span></div>
+        </div>
+        <div class="cta-row" style="margin:0.5rem 0 1rem">
+          <button class="btn secondary" id="sync-dir" type="button">${(d.directory?.banks || 0) ? "Refresh" : "Load"} the institution directory (FDIC + NCUA)</button>
+          <span class="source-note">Pulls every active US bank and credit union from public data. Takes a few minutes; leave the tab open.</span>
         </div>
         <section>
           <h2 class="dash-title">Listings</h2>
@@ -888,6 +995,29 @@
 
     const say = (t) => (document.getElementById("act-msg").textContent = t);
     document.getElementById("admin-out").addEventListener("click", () => { store.del("bankstack.admin"); location.hash = "home"; });
+    document.getElementById("sync-dir").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      const totals = {};
+      for (const source of ["fdic", "ncua"]) {
+        let offset = 0;
+        totals[source] = 0;
+        try {
+          while (offset !== null) {
+            say(`Syncing ${source.toUpperCase()}… ${totals[source].toLocaleString()} imported so far.`);
+            const r = await api("/api/admin/institutions/sync", { method: "POST", admin: true, body: JSON.stringify({ source, offset }) });
+            totals[source] += r.imported;
+            offset = r.next_offset;
+          }
+        } catch (err) {
+          say(`${source.toUpperCase()} sync stopped: ${err.message}. ${totals[source]} rows made it in — run it again to continue.`);
+          e.target.disabled = false;
+          return;
+        }
+      }
+      await viewAdmin();
+      document.getElementById("act-msg").textContent =
+        `Directory synced: ${totals.fdic.toLocaleString()} banks and ${totals.ncua.toLocaleString()} credit unions imported or refreshed.`;
+    });
     document.getElementById("run-maint").addEventListener("click", async (e) => {
       e.target.disabled = true; say("Checking listings. This can take up to a minute…");
       try {
@@ -911,7 +1041,10 @@
     });
     document.getElementById("admin-add").addEventListener("submit", async (e) => {
       e.preventDefault();
-      const data = Object.fromEntries(new FormData(e.currentTarget));
+      const afd = new FormData(e.currentTarget);
+      const data = Object.fromEntries(afd);
+      data.core_systems = afd.getAll("core_systems");
+      data.licenses = afd.getAll("licenses");
       const msg = document.getElementById("add-msg");
       try {
         await api("/api/admin/jobs", { method: "POST", admin: true, body: JSON.stringify(data) });
@@ -922,7 +1055,18 @@
   }
 
 
-  // ---------- candidate profile, matches and quick apply ----------
+  // ---------- candidate profile, matches, saved jobs and quick apply ----------
+  function profileTabs(active) {
+    return `<nav class="profile-tabs" aria-label="Your profile">
+      ${[["profile", "Profile"], ["matches", "Matches"], ["saved", "Saved jobs"], ["applications", "Applications"]]
+        .map(([k, v]) => `<a href="#${k}"${k === active ? ' aria-current="page"' : ""}>${v}</a>`).join("")}
+    </nav>`;
+  }
+
+  async function toggleSave(jobId, wantSaved) {
+    return api("/api/candidate/save", { method: "POST", cauth: true, body: JSON.stringify({ job_id: jobId, saved: wantSaved }) });
+  }
+
   function candidateSignedOut(message) {
     view.innerHTML = `
       <div class="wrap post">
@@ -968,13 +1112,15 @@
     catch (err) { return candidateExpired(err); }
     const me = d.candidate;
     view.innerHTML = `
+      <div class="wrap">${profileTabs("profile")}</div>
       <div class="wrap post">
         <section class="post-intro">
           <p class="eyebrow">Your profile</p>
           <h1>${esc(me.name || "Welcome")}</h1>
           <p class="lede">The more your profile says, the sharper your matches. Your résumé stays private: a bank only sees it when you apply.</p>
           <div class="cta-row"><a class="btn" href="#matches">See my matches</a><button class="linkish" id="c-signout" type="button">Sign out</button></div>
-          ${d.applications.length ? `<div><h2 style="font-size:1rem;margin-bottom:0.4rem">Jobs you've applied to</h2><ul class="applied-list">${d.applications.map((a) => `<li><a href="${jobHref(a.job_id)}">${esc(a.job_title)}</a> · ${esc(a.company)} <span class="source-note">${esc(fmtDate(a.created_at))}</span></li>`).join("")}</ul></div>` : ""}
+          <p class="source-note">${d.applications.length ? `You've applied to ${d.applications.length} ${d.applications.length === 1 ? "job" : "jobs"} — see <a href="#applications">Applications</a>.` : ""}
+          ${d.saved.length ? ` ${d.saved.length} saved ${d.saved.length === 1 ? "job" : "jobs"} under <a href="#saved">Saved jobs</a>.` : ""}</p>
         </section>
         <form class="panel form" id="profile-form" novalidate>
           <h2>About you</h2>
@@ -990,7 +1136,16 @@
           <div class="field"><label>Departments you'd work in</label>
             <div class="chip-set">${Object.entries(CATEGORIES).map(([k, v]) => `<label class="chip-check"><input type="checkbox" name="categories" value="${k}"${(me.categories || []).includes(k) ? " checked" : ""}><span>${esc(v)}</span></label>`).join("")}</div>
           </div>
-          <div class="field"><label for="pr-summary">Experience in your own words (optional)</label><textarea id="pr-summary" name="summary" rows="4" placeholder="15 years in consumer lending; NMLS; led a team of six processors…">${esc(me.summary || "")}</textarea><span class="hint">Used for matching alongside your résumé.</span></div>
+          <div class="field"><label>Core banking systems you've worked on</label>
+            <div class="chip-set">${chipChecks("core_systems", CORE_SYSTEMS, me.core_systems)}</div>
+            <span class="hint">Experience on an employer's exact core is one of the strongest signals in banking. Uploading a résumé ticks these automatically when we spot them.</span></div>
+          <div class="field"><label>Licenses &amp; certifications you hold</label>
+            <div class="chip-set">${chipChecks("licenses", LICENSES, me.licenses)}</div></div>
+          <div class="field"><label for="pr-summary">Experience in your own words (optional)</label><textarea id="pr-summary" name="summary" rows="4" placeholder="15 years in consumer lending; NMLS; led a team of six processors…">${esc(me.summary || "")}</textarea><span class="hint">Used for matching alongside your résumé${me.pool_visible ? ", and shown on your anonymous talent-pool card" : ""}.</span></div>
+          <h2>Talent pool</h2>
+          <p class="source-note">Opt in and hiring banks see an anonymous card: departments, systems, licenses, location and your summary — never your name, contact details or résumé. If a role fits, they invite you by email and you decide whether to respond.</p>
+          <label class="chip-check"><input type="checkbox" name="pool_visible"${me.pool_visible ? " checked" : ""}><span>Show me in the talent pool, anonymously</span></label>
+          <div class="field" style="margin-top:0.6rem"><label for="pr-blocked">Hide me from these employers (optional)</label><input id="pr-blocked" name="blocked_employers" placeholder="Your current employer's name — separate several with commas" value="${esc(me.blocked_employers || "")}"><span class="hint">Institutions named here never see your card and can't invite you. Job-hunting quietly? Put your employer here.</span></div>
           <h2>Résumé</h2>
           ${me.resume_name
             ? `<p class="source-note">On file: <b>${esc(me.resume_name)}</b>${me.resume_size ? ` (${fmtSize(me.resume_size)})` : ""}.${me.text_ok ? "" : " We couldn't read text from this file, so matches lean on your profile details."} Choose a new file to replace it.</p>`
@@ -1016,13 +1171,19 @@
         await api("/api/candidate", { method: "PUT", cauth: true, body: JSON.stringify({
           name: fd.get("name"), phone: fd.get("phone"), location: fd.get("location"),
           work_mode_pref: fd.get("work_mode_pref"), linkedin_url: fd.get("linkedin_url"),
-          summary: fd.get("summary"), categories: fd.getAll("categories") }) });
+          summary: fd.get("summary"), categories: fd.getAll("categories"),
+          core_systems: fd.getAll("core_systems"), licenses: fd.getAll("licenses"),
+          pool_visible: !!fd.get("pool_visible"), blocked_employers: fd.get("blocked_employers") }) });
         let note = "Profile saved.";
         if (file && file.size) {
           const rf = new FormData();
           rf.append("resume", file);
           const r = await api("/api/candidate/resume", { method: "POST", cauth: true, body: rf });
           note = r.text_extracted ? "Profile and résumé saved." : "Saved. We couldn't read text from that file, so matches lean on your profile details.";
+          const found = [...(r.detected?.core_systems || []).map((s) => CORE_SYSTEMS[s]), ...(r.detected?.licenses || []).map((l) => LICENSES[l])].filter(Boolean);
+          if (found.length && !fd.getAll("core_systems").length && !fd.getAll("licenses").length) {
+            note += ` We spotted ${found.slice(0, 4).join(", ")} in your résumé and added ${found.length === 1 ? "it" : "them"} to your profile.`;
+          }
         }
         state.pendingFlash = [note + " Here are your matches."];
         location.hash = "matches";
@@ -1042,6 +1203,7 @@
     catch (err) { return candidateExpired(err); }
     const TIER = { strong: "Strong match", good: "Good match", possible: "Worth a look" };
     view.innerHTML = `
+      <div class="wrap">${profileTabs("matches")}</div>
       <div class="wrap dash">
         <div class="dash-head">
           <div style="display:grid;gap:0.3rem">
@@ -1060,7 +1222,8 @@
               <span class="tags">${m.direct ? '<span class="tag direct">Direct</span>' : ""}<span class="tag">${esc(CATEGORIES[m.category] || m.category)}</span><span class="tag">${esc(MODES[m.work_mode] || m.work_mode)}</span></span>
               ${m.reasons.length ? `<span class="source-note">${esc(m.reasons.join(" · "))}</span>` : ""}
             </div>
-            <div class="match-act">${m.applied ? `<span class="status-pill">Applied</span>` : m.direct ? `<button class="btn" data-qa="${m.id}" type="button">Quick apply</button>` : `<a class="btn secondary" href="${jobHref(m.id)}">View &amp; apply</a>`}</div>
+            <div class="match-act">${m.applied ? `<span class="status-pill">Applied</span>` : m.direct ? `<button class="btn" data-qa="${m.id}" type="button">Quick apply</button>` : `<a class="btn secondary" href="${jobHref(m.id)}">View &amp; apply</a>`}
+              <button class="linkish save-link" data-save="${m.id}" data-on="${m.saved ? 1 : 0}" type="button">${m.saved ? "★ Saved" : "☆ Save"}</button></div>
           </li>`).join("")}
         </ul>
       </div>`;
@@ -1079,13 +1242,142 @@
         document.getElementById("act-msg").textContent = err.message;
       }
     }));
+    view.querySelectorAll("[data-save]").forEach((b) => b.addEventListener("click", async () => {
+      const want = b.dataset.on !== "1";
+      b.disabled = true;
+      try {
+        await toggleSave(b.dataset.save, want);
+        b.dataset.on = want ? "1" : "0";
+        b.textContent = want ? "★ Saved" : "☆ Save";
+      } catch (err) { document.getElementById("act-msg").textContent = err.message; }
+      b.disabled = false;
+    }));
   }
 
-  async function maybeQuickApply(j) {
-    const slot = document.getElementById("qa-slot");
-    if (!slot || state.demo || !ckey() || !j.direct || j.apply_url) return;
+  async function viewSaved() {
+    if (!ckey()) return candidateSignedOut();
+    if (state.demo) {
+      view.innerHTML = `<div class="wrap narrow"><p class="msg">Preview mode: saved jobs work once the site is deployed with its database.</p></div>`;
+      return;
+    }
+    view.innerHTML = `<div class="wrap narrow"><p>Loading your saved jobs…</p></div>`;
+    let d;
+    try { d = await api("/api/candidate", { cauth: true }); }
+    catch (err) { return candidateExpired(err); }
+    const appliedIds = new Set(d.applications.map((a) => String(a.job_id)));
+    view.innerHTML = `
+      <div class="wrap">${profileTabs("saved")}</div>
+      <div class="wrap dash">
+        <div class="dash-head">
+          <div style="display:grid;gap:0.3rem">
+            <h1 style="font-size:1.8rem">Saved jobs</h1>
+            <span class="source-note">${d.saved.length ? `${d.saved.length} ${d.saved.length === 1 ? "job" : "jobs"} you've bookmarked. Closed roles stay here until you remove them.` : ""}</span>
+          </div>
+        </div>
+        <p class="source-note" id="act-msg" aria-live="polite"></p>
+        ${d.saved.length ? `<ul class="ledger match-list">
+          ${d.saved.map((s) => `<li class="match-row${s.open ? "" : " is-closed"}">
+            <div class="job-main">
+              ${s.open ? `<a class="job-title" href="${jobHref(s.job_id)}">${esc(s.title)}</a>` : `<span class="job-title">${esc(s.title)}</span>`}
+              <span class="job-meta">${esc(s.company)} · ${esc(s.location)}${salary(s) ? " · " + esc(salary(s)) : ""}</span>
+              <span class="tags">${s.direct ? '<span class="tag direct">Direct</span>' : ""}<span class="tag">${esc(CATEGORIES[s.category] || s.category)}</span><span class="tag">${esc(MODES[s.work_mode] || s.work_mode)}</span>${s.open ? "" : '<span class="tag">No longer open</span>'}</span>
+              <span class="source-note">Saved ${esc(fmtDate(s.saved_at))}</span>
+            </div>
+            <div class="match-act">
+              ${appliedIds.has(String(s.job_id)) ? `<span class="status-pill">Applied</span>` : s.open ? `<a class="btn secondary" href="${jobHref(s.job_id)}">View &amp; apply</a>` : ""}
+              <button class="linkish save-link" data-unsave="${s.job_id}" type="button">Remove</button>
+            </div>
+          </li>`).join("")}
+        </ul>`
+        : `<div class="panel"><p>Nothing saved yet. On any job page, or next to a match, use <b>☆ Save</b> to keep a role here while you decide.</p>
+           <div class="cta-row"><a class="btn" href="#matches">See my matches</a><a class="btn secondary" href="#jobs">Browse all positions</a></div></div>`}
+      </div>`;
+    view.querySelectorAll("[data-unsave]").forEach((b) => b.addEventListener("click", async () => {
+      b.disabled = true;
+      try { await toggleSave(b.dataset.unsave, false); b.closest("li").remove(); }
+      catch (err) { document.getElementById("act-msg").textContent = err.message; b.disabled = false; }
+    }));
+  }
+
+  async function viewApplications() {
+    if (!ckey()) return candidateSignedOut();
+    if (state.demo) {
+      view.innerHTML = `<div class="wrap narrow"><p class="msg">Preview mode: applications work once the site is deployed with its database.</p></div>`;
+      return;
+    }
+    view.innerHTML = `<div class="wrap narrow"><p>Loading your applications…</p></div>`;
+    let d;
+    try { d = await api("/api/candidate", { cauth: true }); }
+    catch (err) { return candidateExpired(err); }
+    view.innerHTML = `
+      <div class="wrap">${profileTabs("applications")}</div>
+      <div class="wrap dash">
+        <div class="dash-head">
+          <div style="display:grid;gap:0.3rem">
+            <h1 style="font-size:1.8rem">Your applications</h1>
+            <span class="source-note">${d.applications.length ? `${d.applications.length} ${d.applications.length === 1 ? "application" : "applications"}. The hiring team contacts you directly if they'd like to talk.` : ""}</span>
+          </div>
+        </div>
+        ${d.invites.length ? `<section style="margin-bottom:1.5rem">
+          <h2 class="dash-title">Invites from banks</h2>
+          <p class="source-note">These employers saw your anonymous talent-pool card and asked you to apply. They haven't seen your name or contact details.</p>
+          <div class="table-wrap"><table class="stack-table">
+            <thead><tr><th>Job</th><th>Employer</th><th>Received</th><th></th></tr></thead>
+            <tbody>${d.invites.map((v) => `<tr>
+              <td data-label="Job">${v.open ? `<a href="${jobHref(v.job_id)}">${esc(v.job_title)}</a>` : esc(v.job_title)}${v.note ? `<details><summary>Their note</summary><p class="prose">${esc(v.note)}</p></details>` : ""}</td>
+              <td data-label="Employer">${esc(v.company)}</td>
+              <td data-label="Received" class="num">${esc(fmtDate(v.created_at))}</td>
+              <td data-label="" class="acts">${v.open ? `<a href="${jobHref(v.job_id)}">View &amp; apply</a>` : '<span class="source-note">Closed</span>'}</td>
+            </tr>`).join("")}</tbody>
+          </table></div>
+        </section>` : ""}
+        ${d.applications.length ? `<div class="table-wrap"><table class="stack-table">
+          <thead><tr><th>Job</th><th>Employer</th><th>Applied</th><th>Posting</th></tr></thead>
+          <tbody>${d.applications.map((a) => `<tr>
+            <td data-label="Job">${a.status === "open" ? `<a href="${jobHref(a.job_id)}">${esc(a.job_title)}</a>` : esc(a.job_title)}</td>
+            <td data-label="Employer">${esc(a.company)}</td>
+            <td data-label="Applied" class="num">${esc(fmtDate(a.created_at))}</td>
+            <td data-label="Posting"><span class="status-pill${a.status === "open" ? "" : " bad"}">${a.status === "open" ? "Still open" : "Closed"}</span></td>
+          </tr>`).join("")}</tbody>
+        </table></div>`
+        : `<div class="panel"><p>No applications yet. Your matches are ranked by how well each role fits your résumé — a good place to start.</p>
+           <div class="cta-row"><a class="btn" href="#matches">See my matches</a><a class="btn secondary" href="#jobs">Browse all positions</a></div></div>`}
+      </div>`;
+  }
+
+  // On a job page: wires the Save button and, for Direct roles, the one-click apply box.
+  async function initCandidateBits(j) {
+    const saveBtn = document.getElementById("save-job");
+    if (state.demo) {
+      if (saveBtn) saveBtn.addEventListener("click", () => flash("Preview mode: saving jobs works on the live site."));
+      return;
+    }
+    if (!ckey()) {
+      if (saveBtn) saveBtn.addEventListener("click", () => {
+        state.pendingFlash = ["Create a free profile to save jobs and apply in one click."];
+        location.hash = "profile";
+      });
+      return;
+    }
     let d;
     try { d = await api("/api/candidate", { cauth: true }); } catch { return; }
+    if (saveBtn) {
+      let on = d.saved.some((s) => String(s.job_id) === String(j.id));
+      const paint = () => (saveBtn.textContent = on ? "★ Saved" : "☆ Save job");
+      paint();
+      saveBtn.addEventListener("click", async () => {
+        saveBtn.disabled = true;
+        try { await toggleSave(j.id, !on); on = !on; paint(); }
+        catch (err) { flash(err.message, true); }
+        saveBtn.disabled = false;
+      });
+    }
+    maybeQuickApply(j, d);
+  }
+
+  function maybeQuickApply(j, d) {
+    const slot = document.getElementById("qa-slot");
+    if (!slot || !j.direct || j.apply_url || !d) return;
     const me = d.candidate;
     const prior = d.applications.find((a) => String(a.job_id) === String(j.id));
     if (prior) {
@@ -1130,7 +1422,8 @@
     if (pathJob && h) history.replaceState(null, "", "/#" + h);
     if (!h) h = pathJob ? `job-${pathJob[1]}` : "home";
     if (h === "employers") h = "post";
-    const section = h.startsWith("job-") ? "jobs" : h.startsWith("edit-") ? "dashboard" : h === "profile" ? "matches" : h;
+    const section = h.startsWith("job-") ? "jobs" : h.startsWith("edit-") ? "dashboard"
+      : ["matches", "saved", "applications"].includes(h) ? "profile" : h;
     document.querySelectorAll("[data-nav]").forEach((a) => {
       if (a.dataset.nav === section) a.setAttribute("aria-current", "page");
       else a.removeAttribute("aria-current");
@@ -1144,6 +1437,8 @@
     else if (h === "dashboard") viewDashboard();
     else if (h === "profile") viewProfile();
     else if (h === "matches") viewMatches();
+    else if (h === "saved") viewSaved();
+    else if (h === "applications") viewApplications();
     else if (h === "admin") viewAdmin();
     else viewHome();
     window.scrollTo(0, 0);

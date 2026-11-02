@@ -401,8 +401,16 @@ tr.is-new td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .tier-strong b { color: var(--accent); }
 .tier-good b { color: var(--brass); }
 .tier-possible b { color: var(--muted); }
-.match-act { align-self: center; white-space: nowrap; }
+.match-act { align-self: center; white-space: nowrap; display: grid; gap: 0.35rem; justify-items: center; }
 .match-row.is-applied { opacity: 0.7; }
+.match-row.is-closed { opacity: 0.6; }
+.save-link { font-size: 0.85rem; }
+
+/* My profile: tab bar shared by Profile, Matches, Saved jobs and Applications */
+.profile-tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; margin: 1.1rem 0 0; border-bottom: 1px solid var(--line); }
+.profile-tabs a { padding: 0.55rem 0.85rem; text-decoration: none; color: var(--muted); font: 600 0.92rem var(--font-body); border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.profile-tabs a:hover { color: var(--fg); }
+.profile-tabs a[aria-current="page"] { color: var(--accent); border-bottom-color: var(--accent); }
 .qa-box { display: grid; gap: 0.45rem; padding: 0.9rem; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
 .applied-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; font-size: 0.9rem; }
 @media (max-width: 640px) {
@@ -410,6 +418,22 @@ tr.is-new td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
   .match-act { width: 100%; }
   .match-act .btn { width: 100%; }
 }
+
+/* Banking specifics on job forms */
+.banking-extra { border: 1px solid var(--line); border-radius: var(--radius); padding: 0.65rem 0.9rem; }
+.banking-extra summary { cursor: pointer; font-weight: 600; font-size: 0.92rem; }
+.banking-extra .field { margin-top: 0.8rem; }
+
+/* Employer talent pool */
+.talent-filters { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+.talent-filters input { max-width: 8rem; }
+.talent-list { display: grid; gap: 0.8rem; }
+.talent-card { border: 1px solid var(--line); border-radius: var(--radius); padding: 0.9rem 1rem; display: grid; gap: 0.7rem; }
+.talent-card .t-main { display: grid; gap: 0.4rem; font-size: 0.95rem; }
+.talent-card .t-summary { margin: 0; color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
+.t-invite { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.t-invite select { max-width: 16rem; }
+.t-invite input { flex: 1; min-width: 10rem; }
 
 /* Footer: stacked lines read better than side-by-side with the disclaimer */
 .site-foot .wrap { flex-direction: column; gap: 0.45rem; justify-content: flex-start; }

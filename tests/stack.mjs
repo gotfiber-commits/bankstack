@@ -7,6 +7,7 @@ import pg from "pg";
 
 export const PORT = Number(process.env.TEST_PORT || 8899);
 export const STRIPE_PORT = Number(process.env.TEST_STRIPE_PORT || 12111);
+export const REGISTRY_PORT = Number(process.env.TEST_REGISTRY_PORT || 8977);
 export const BASE = `http://localhost:${PORT}`;
 
 export async function startStack(dbName = "bankstack_e2e") {
@@ -16,6 +17,7 @@ export async function startStack(dbName = "bankstack_e2e") {
     STRIPE_SECRET_KEY: "sk_test_e2e", STRIPE_PRICE_ID: "price_e2e_99", STRIPE_WEBHOOK_SECRET: "whsec_e2e_secret",
     STRIPE_API_HOST: "localhost", STRIPE_API_PORT: String(STRIPE_PORT), STRIPE_API_PROTOCOL: "http",
     ADMIN_TOKEN: "admin_e2e_token", LOCAL_BLOBS_DIR: mkdtempSync(path.join(os.tmpdir(), "bankstack-blobs-")),
+    FDIC_API_BASE: `http://localhost:${REGISTRY_PORT}`, NCUA_API_BASE: `http://localhost:${REGISTRY_PORT}`,
   });
   delete process.env.RESEND_API_KEY;
 
@@ -28,7 +30,9 @@ export async function startStack(dbName = "bankstack_e2e") {
 
   const { startFakeStripe } = await import("./fake-stripe.mjs");
   const { startLocalServer } = await import("./local-server.mjs");
+  const { startFakeRegistries } = await import("./fake-registries.mjs");
   const fakeStripe = await startFakeStripe(STRIPE_PORT);
+  const registries = await startFakeRegistries(REGISTRY_PORT);
   const site = await startLocalServer(PORT);
   const { db } = await import("../netlify/lib/shared.mjs");
   const Stripe = (await import("stripe")).default;
@@ -49,9 +53,9 @@ export async function startStack(dbName = "bankstack_e2e") {
   };
 
   return {
-    fakeStripe, site, sql: db(), sendWebhook, pay,
+    fakeStripe, registries, site, sql: db(), sendWebhook, pay,
     lastSession: () => [...fakeStripe.sessions.values()].at(-1),
     outbox: () => (globalThis.__outbox ||= []),
-    async stop() { site.server.close(); fakeStripe.server.close(); await db().end?.(); },
+    async stop() { site.server.close(); fakeStripe.server.close(); registries.server.close(); await db().end?.(); },
   };
 }

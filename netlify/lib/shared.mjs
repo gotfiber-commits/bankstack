@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { neon } from "@neondatabase/serverless";
 import pg from "pg";
 import Stripe from "stripe";
+import { cleanCoreSystems, cleanLicenses } from "./banking.mjs";
 
 let _sql, _stripe;
 
@@ -73,6 +74,24 @@ export const newToken = () => "bsk_" + crypto.randomBytes(24).toString("hex");
 export const randomToken = () => crypto.randomBytes(24).toString("hex");
 export const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 
+// Company names as people type them vs. as regulators file them: lowercase, drop punctuation
+// and legal suffixes, collapse spaces. Used to match jobs to institutions and for block lists.
+export function normalizeName(s) {
+  return String(s || "").toLowerCase()
+    .replace(/[^a-z0-9& ]+/g, " ")
+    .replace(/\b(the|inc|incorporated|n a|na|fsb|ssb|corp|corporation|company|co|llc|lp)\b/g, " ")
+    .replace(/\s+/g, " ").trim();
+}
+
+// Links a posting to its directory page when the employer's name matches an institution.
+// Never blocks the caller: a missing table or empty directory just means no link.
+export async function findInstitutionId(sql, company) {
+  try {
+    const [row] = await sql`SELECT id FROM institutions WHERE normalized_name = ${normalizeName(company)} AND active LIMIT 1`;
+    return row?.id ?? null;
+  } catch { return null; }
+}
+
 // Constant-time string comparison for secrets.
 export function safeEqual(a, b) {
   const x = Buffer.from(String(a || "")), y = Buffer.from(String(b || ""));
@@ -115,6 +134,8 @@ export function validateJob(b) {
     summary: clean(b.summary, 400),
     description: clean(b.description, 20000) || null,
     apply_url: clean(b.apply_url, 500) || null,
+    core_systems: cleanCoreSystems(b.core_systems),
+    licenses: cleanLicenses(b.licenses),
   };
   if (!job.title) return { error: "Add a job title." };
   if (!job.location) return { error: "Add a location." };

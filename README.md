@@ -8,6 +8,9 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 - **Profiles & one-click apply**: a free candidate profile (passwordless email sign-in, same as employers), with departments, location, work preference and a résumé on file.
 - **Ranked matches**: the résumé's text is extracted at upload (PDF/DOCX) and every open job is scored against it — banking-domain phrases by department, word overlap weighted by rarity, plus the candidate's own picks. Each match shows a 0–98 score, a tier and the reasons. No outside AI services; deterministic and explainable (`netlify/lib/match.mjs`).
 - **Quick apply**: one click sends the saved profile and a copy of the résumé — on job pages and straight from the matches list. Replacing the résumé later never changes past applications.
+- **My profile hub**: one section with tabs — Profile, Matches, Saved jobs, Applications. **☆ Save** on any job page or match bookmarks a role; the Applications tab lists everything they've applied to, whether the posting is still open, and any talent-pool invites.
+- **Banking-native profile**: core systems they've run (SilverLake, Episys, Fiserv DNA…) and licenses they hold (NMLS, CRCM, CAMS…), auto-detected from the résumé when left blank. Core-system and license matches are the top-ranked reasons in matching.
+- **Talent pool (opt-in, anonymous)**: candidates can show an anonymous card — location, departments, systems, licenses, summary; never name, contact details or résumé — to employers with a live posting. A per-candidate block list hides them from named employers (their own bank, say). Employers invite them to a posting by email; identity is shared only if the candidate applies.
 - Landing page, then **View current positions**: search, filter by specialty, institution type and on-site/hybrid/remote.
 - Every job has a real, shareable URL (`/jobs/123`) with its own page title and link preview.
 - Apply with name, email, phone, LinkedIn, a **résumé upload** (PDF or Word, up to 5 MB, checked to be a real document) and a note. They get a confirmation email.
@@ -15,7 +18,8 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 - **Weekly job alerts** by specialty, with email confirmation and one-click unsubscribe.
 
 **Employers**
-- **Post a job**: fill in the role, pay $99 through Stripe Checkout, and it goes live as a Direct listing above sourced jobs.
+- **Post a job**: fill in the role, pay $99 through Stripe Checkout, and it goes live as a Direct listing above sourced jobs. Optional banking specifics — the core system the role touches and licenses required — make the posting filterable and boost its match rank for the right candidates.
+- **Talent pool** in the dashboard: browse opted-in candidates anonymously, filter by department, state, core system or license, and invite one to a posting with a note. Included with any live posting.
 - Each posting is its own monthly subscription. **Cancel posting** stops renewal (it stays up through the paid month); **Keep renewing** undoes it.
 - Email when a posting goes live and for **every new applicant** (reply goes straight to the candidate).
 - **Dashboard**: postings with billing status, applicant counts, **edit posting**, applicants with **résumé download**, **stages** (New, Reviewing, Interview, Offer, Hired, Not a fit), filter by posting, and **Cards & invoices** (Stripe's billing portal).
@@ -25,9 +29,14 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 - Monthly recurring revenue, paid postings live, unpaid starts, sourced listings, employers, applications this week, alert subscribers.
 - Take down any listing (a paid one also has its billing cancelled), reopen sourced ones, **add sourced listings** by hand, run the link check on demand.
 
+**Institution directory** — `/banks`
+- Every active US bank (FDIC) and credit union (NCUA) gets its own server-rendered page — assets, branches, charter numbers from public data — showing its open jobs on the board, with state pages and a browsable index. ~8,500 indexable pages targeting "jobs at {bank name}" searches, all in the sitemap.
+- Loaded and refreshed from `/#admin` → "Load the institution directory" (pages through the FDIC and NCUA APIs; a few minutes). Postings link to their institution's page automatically by name.
+- Data sources: `api.fdic.gov/banks/institutions` (the BankFind API — note it moved off banks.data.fdic.gov) and NCUA's credit-union locator API at mapping.ncua.gov (100 rows per page; roster only, so CU asset figures stay empty until a richer source is wired). If NCUA's response shape has drifted, the admin sync reports the error and the FDIC half still completes.
+
 **Automatic**
-- **Google for Jobs**: employer postings carry schema.org `JobPosting` data; `/sitemap.xml` and `/robots.txt` are generated. Sourced listings are marked noindex since they duplicate someone else's posting.
-- **Daily**: closes expired listings, and sourced listings whose original posting returns 404/410.
+- **Google for Jobs**: employer postings carry schema.org `JobPosting` data; `/sitemap.xml` and `/robots.txt` are generated (including every directory page). Sourced listings are marked noindex since they duplicate someone else's posting.
+- **Daily**: closes expired listings, and sourced listings whose original posting is gone — a hard 404/410, or a page that still loads but says the job is no longer available (how aggregators and most ATSes behave).
 - **Weekly (Mondays 8 a.m. Central)**: job alert emails.
 - Spam protection: hidden honeypot field on every public form; duplicate applications are caught.
 
@@ -37,17 +46,20 @@ Static front end + Netlify Functions (Node 20+), Neon Postgres, Stripe, Resend f
 
 ```
 public/                  index.html, app.js, app.css, seed-jobs.json (64 real listings)
-netlify/functions/       jobs, apply, checkout, session, stripe-webhook, employer, auth, alerts,
-                         admin, job-page (/jobs/:id), sitemap, alerts-digest (weekly), daily-maintenance
-netlify/lib/             shared (db, Stripe, validation), email, files (résumés), tasks (digest, link check)
-db/schema.sql            employers, jobs, applications, alert_subscriptions (safe to re-run; upgrades older DBs)
+netlify/functions/       jobs, apply, checkout, session, stripe-webhook, employer (+talent pool), auth,
+                         alerts, candidate, candidate-auth, admin, job-page (/jobs/:id),
+                         institution-page (/banks/*), sitemap, alerts-digest (weekly), daily-maintenance
+netlify/lib/             shared (db, Stripe, validation), banking (core systems, licenses, résumé detection),
+                         institutions (FDIC/NCUA sync), match, email, files (résumés), extract, tasks
+db/schema.sql            every table; safe to re-run — it upgrades older databases in place
 scripts/seed.mjs         creates the schema and loads the seed jobs
-tests/                   e2e.mjs (81 API checks), browser.mjs (31 checks in real Chromium), fake Stripe, local server
+tests/                   e2e.mjs (148 API checks), browser.mjs (44 checks in real Chromium),
+                         fake Stripe, fake FDIC/NCUA, local server
 ```
 
 ## Updating an existing database
 
-If your Neon database was set up before the switch to departments, paste `db/migrate-all-bank-jobs.sql` into the Neon SQL Editor and click Run. It is safe to run more than once.
+Paste the whole of `db/schema.sql` into the Neon SQL Editor and click Run — it creates anything missing and upgrades older databases in place, without touching data. Safe to run as often as you like. (The dated files in `db/` are one-off patches already folded into it.)
 
 ## Launch checklist
 
@@ -68,6 +80,7 @@ If your Neon database was set up before the switch to departments, paste `db/mig
    Put its signing secret in `STRIPE_WEBHOOK_SECRET` and redeploy.
 7. **Try it with a test card** (`4242 4242 4242 4242`): post a job, apply to it from another browser with a PDF, check both inboxes, open `/#admin`.
 8. **Go live**: switch Stripe to live keys and a live $99 price, update the three Stripe variables, redeploy. Submit `https://YOUR-SITE/sitemap.xml` in Google Search Console.
+9. **Load the directory**: open `/#admin` and click "Load the institution directory". Resubmit the sitemap afterwards so Google finds the ~8,500 new institution pages.
 
 ## Running locally
 
@@ -83,9 +96,9 @@ Both suites run the real function code against a real Postgres database, with a 
 ```bash
 # Postgres on localhost (e.g. docker run -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16)
 export TEST_DATABASE_ADMIN_URL=postgres://postgres@127.0.0.1:5432/postgres
-npm run test:e2e          # 81 checks: posting, payment, renewals, sign-in, applying, résumés, privacy, alerts, SEO, admin
+npm run test:e2e          # 148 checks: posting, payment, renewals, sign-in, applying, résumés, saved jobs, filters, talent pool, directory, privacy, alerts, SEO, admin
 npx playwright install chromium
-npm run test:browser      # 31 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
+npm run test:browser      # 44 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
 ```
 
 ## API
@@ -104,7 +117,12 @@ npm run test:browser      # 31 checks clicking through the real pages, desktop a
 | GET/PUT | `/api/candidate` | Bearer ck_ token: profile + their applications |
 | POST/GET | `/api/candidate/resume` | upload (extracts text) / download own résumé |
 | GET | `/api/candidate/matches` | every open job ranked, with scores and reasons |
+| POST | `/api/candidate/save` | bookmark `{ job_id, saved: true\|false }` |
 | POST | `/api/candidate/apply` | one-click apply `{ job_id, cover_note? }` |
+| GET | `/api/employer/talent?category=&state=&core_system=&license=` | anonymous talent pool (needs a live posting) |
+| POST | `/api/employer/talent/:id/invite` | `{ job_id, note? }` → invite email to the candidate |
+| POST | `/api/admin/institutions/sync` | `{ source: "fdic"\|"ncua", offset }` → one page of the directory |
+| GET | `/banks`, `/banks/:state`, `/banks/:slug` | server-rendered institution directory |
 | GET | `/api/employer` | Bearer key: postings, applicants |
 | GET/PUT | `/api/employer/jobs/:id` | load / edit a posting |
 | POST | `/api/employer/jobs/:id/pay` · `/cancel` · `/resume` | billing actions |

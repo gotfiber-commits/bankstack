@@ -10,9 +10,22 @@
 // POST /api/employer/billing                  → Stripe billing portal (cards, invoices)
 import {
   db, stripe, json, fail, siteUrl, employerFromRequest, createJobCheckout, syncJobFromSubscription,
-  validateJob, APPLICATION_STATUSES,
+  validateJob, APPLICATION_STATUSES, clean, normalizeName,
 } from "../lib/shared.mjs";
+import { CORE_SYSTEMS, LICENSES } from "../lib/banking.mjs";
 import { loadFile } from "../lib/files.mjs";
+import { sendEmail, layout, esc } from "../lib/email.mjs";
+
+// A candidate's block list ("First Metro Bank, Acme CU") hides them from those employers,
+// matching loosely in both directions so "First Metro" still blocks "First Metro Bank".
+function blockedFrom(candidate, employerCompany) {
+  const emp = normalizeName(employerCompany);
+  if (!emp) return false;
+  return String(candidate.blocked_employers || "").split(",").some((entry) => {
+    const b = normalizeName(entry);
+    return b && (emp.includes(b) || b.includes(emp));
+  });
+}
 
 export default async (req) => {
   const employer = await employerFromRequest(req);
@@ -46,6 +59,81 @@ export default async (req) => {
       return_url: `${siteUrl(req)}/#dashboard`,
     });
     return json({ url: portal.url });
+  }
+
+  // Talent pool: anonymous browsing and invites. Included while the employer has a live posting.
+  const inviteMatch = path.match(/^\/api\/employer\/talent\/(\d+)\/invite$/);
+  if (path === "/api/employer/talent" || inviteMatch) {
+    const openJobs = await sql`
+      SELECT id, title FROM jobs
+      WHERE employer_id = ${employer.id} AND status = 'open' AND expires_at > now() ORDER BY posted_at DESC`;
+    if (!openJobs.length) {
+      return fail("The talent pool comes with an active posting. Post a job to browse candidates.", 403);
+    }
+
+    if (path === "/api/employer/talent" && req.method === "GET") {
+      const p = new URL(req.url).searchParams;
+      const rows = await sql`
+        SELECT id, location, work_mode_pref, categories, core_systems, licenses, summary,
+               blocked_employers, (resume_key IS NOT NULL) AS has_resume, created_at
+        FROM candidates
+        WHERE pool_visible AND (resume_key IS NOT NULL OR summary IS NOT NULL OR cardinality(categories) > 0)
+        ORDER BY created_at DESC LIMIT 500`;
+      const invited = await sql`SELECT candidate_id, job_id FROM invites WHERE employer_id = ${employer.id}`;
+      const byCand = {};
+      for (const r of invited) (byCand[r.candidate_id] ||= []).push(r.job_id);
+      const cat = p.get("category"), state = (p.get("state") || "").toUpperCase();
+      const core = p.get("core_system"), lic = p.get("license");
+      const out = rows
+        .filter((c) => !blockedFrom(c, employer.company))
+        .filter((c) => !cat || (c.categories || []).includes(cat))
+        .filter((c) => !state || new RegExp(`\\b${state}\\b`).test(c.location || ""))
+        .filter((c) => !CORE_SYSTEMS[core] || (c.core_systems || []).includes(core))
+        .filter((c) => !LICENSES[lic] || (c.licenses || []).includes(lic))
+        .map((c) => ({
+          // Anonymous on purpose: no name, email, phone, LinkedIn or résumé here.
+          id: c.id, location: c.location, work_mode_pref: c.work_mode_pref,
+          categories: c.categories || [], core_systems: c.core_systems || [], licenses: c.licenses || [],
+          summary: c.summary, has_resume: c.has_resume, member_since: c.created_at,
+          invited_job_ids: byCand[c.id] || [],
+        }));
+      return json({ candidates: out, jobs: openJobs });
+    }
+
+    if (inviteMatch && req.method === "POST") {
+      let b;
+      try { b = await req.json(); } catch { return fail("Send JSON."); }
+      const job = openJobs.find((j) => String(j.id) === String(b.job_id));
+      if (!job) return fail("Pick one of your live postings to invite them to.");
+      const [cand] = await sql`SELECT * FROM candidates WHERE id = ${inviteMatch[1]} AND pool_visible`;
+      if (!cand || blockedFrom(cand, employer.company)) return fail("This candidate isn't available.", 404);
+      const note = clean(b.note, 1000);
+      const rows = await sql`
+        INSERT INTO invites (employer_id, candidate_id, job_id, note)
+        VALUES (${employer.id}, ${cand.id}, ${job.id}, ${note || null})
+        ON CONFLICT (employer_id, candidate_id, job_id) DO NOTHING RETURNING id`;
+      if (!rows.length) return json({ ok: true, duplicate: true });
+      const base = siteUrl(req);
+      await sendEmail({
+        to: cand.email,
+        replyTo: employer.email,
+        subject: `${employer.company} would like you to apply: ${job.title}`,
+        text: `${employer.company} saw your anonymous talent-pool profile on BankJobz and invites you to apply for ${job.title}.`
+          + `${note ? `\n\nTheir note: ${note}` : ""}\n\nView the job: ${base}/jobs/${job.id}`
+          + `\n\nThey have not seen your name or contact details. Applying or replying to this email shares your details with them. Not interested? Just ignore this.`,
+        html: layout({
+          heading: `A bank wants you to apply`,
+          paragraphs: [
+            `<b>${esc(employer.company)}</b> saw your anonymous talent-pool profile and invites you to apply for <b>${esc(job.title)}</b>.`,
+            ...(note ? [`Their note: “${esc(note)}”`] : []),
+            `They have not seen your name or contact details. Applying — or replying to this email — shares your details with them. Not interested? Just ignore this.`,
+          ],
+          button: { label: "View the job", url: `${base}/jobs/${job.id}` },
+        }),
+      });
+      return json({ ok: true, duplicate: false });
+    }
+    return fail("Method not allowed", 405);
   }
 
   // Applications
@@ -102,7 +190,7 @@ export default async (req) => {
       UPDATE jobs SET title = ${v.title}, location = ${v.location}, work_mode = ${v.work_mode},
         employment_type = ${v.employment_type}, category = ${v.category}, salary_min = ${v.salary_min},
         salary_max = ${v.salary_max}, summary = ${v.summary}, description = ${v.description},
-        apply_url = ${v.apply_url}, updated_at = now()
+        apply_url = ${v.apply_url}, core_systems = ${v.core_systems}, licenses = ${v.licenses}, updated_at = now()
       WHERE id = ${job.id}`;
     return json({ ok: true });
   }

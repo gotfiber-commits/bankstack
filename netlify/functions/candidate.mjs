@@ -4,9 +4,11 @@
 // POST /api/candidate/resume    → upload résumé (multipart field "resume"); extracts text for matching
 // GET  /api/candidate/resume    → download their own résumé
 // GET  /api/candidate/matches   → every open job ranked against the résumé + profile
+// POST /api/candidate/save      → bookmark a job { job_id, saved: true|false }
 // POST /api/candidate/apply     → one-click apply { job_id, cover_note? }
 import crypto from "node:crypto";
 import { db, json, fail, clean, isUrl, siteUrl, candidateFromRequest, CATEGORIES } from "../lib/shared.mjs";
+import { cleanCoreSystems, cleanLicenses, detectBankingBackground } from "../lib/banking.mjs";
 import { checkResume, saveFile, loadFile } from "../lib/files.mjs";
 import { extractResumeText } from "../lib/extract.mjs";
 import { rankJobs } from "../lib/match.mjs";
@@ -26,12 +28,27 @@ export default async (req) => {
       FROM applications a JOIN jobs j ON j.id = a.job_id
       WHERE a.candidate_id = ${me.id} OR a.email = ${me.email}
       ORDER BY a.created_at DESC LIMIT 100`;
+    const saved = await sql`
+      SELECT s.job_id, s.created_at AS saved_at, j.title, j.company, j.location, j.work_mode, j.category,
+             j.salary_min, j.salary_max, (j.employer_id IS NOT NULL) AS direct,
+             (j.status = 'open' AND j.expires_at > now()) AS open
+      FROM saved_jobs s JOIN jobs j ON j.id = s.job_id
+      WHERE s.candidate_id = ${me.id} ORDER BY s.created_at DESC LIMIT 200`;
+    const invites = await sql`
+      SELECT i.job_id, i.note, i.created_at, j.title AS job_title, j.company,
+             (j.status = 'open' AND j.expires_at > now()) AS open
+      FROM invites i JOIN jobs j ON j.id = i.job_id
+      WHERE i.candidate_id = ${me.id} ORDER BY i.created_at DESC LIMIT 100`;
     return json({
+      saved,
+      invites,
       candidate: {
         name: me.name, email: me.email, phone: me.phone, linkedin_url: me.linkedin_url,
         location: me.location, work_mode_pref: me.work_mode_pref, categories: me.categories,
         summary: me.summary, resume_name: me.resume_name, resume_size: me.resume_size,
         text_ok: !!me.resume_text,
+        core_systems: me.core_systems || [], licenses: me.licenses || [],
+        pool_visible: !!me.pool_visible, blocked_employers: me.blocked_employers || "",
       },
       applications,
     });
@@ -49,7 +66,10 @@ export default async (req) => {
         name = ${name}, phone = ${clean(b.phone, 40) || null}, linkedin_url = ${linkedin || null},
         location = ${clean(b.location, 120) || null},
         work_mode_pref = ${MODES.includes(b.work_mode_pref) ? b.work_mode_pref : "any"},
-        summary = ${clean(b.summary, 4000) || null}, categories = ${categories}
+        summary = ${clean(b.summary, 4000) || null}, categories = ${categories},
+        core_systems = ${cleanCoreSystems(b.core_systems)}, licenses = ${cleanLicenses(b.licenses)},
+        pool_visible = ${b.pool_visible === true || b.pool_visible === "true"},
+        blocked_employers = ${clean(b.blocked_employers, 600)}
       WHERE id = ${me.id}`;
     return json({ ok: true });
   }
@@ -66,9 +86,14 @@ export default async (req) => {
     const key = `profiles/${me.id}/${crypto.randomUUID()}.${check.ext}`;
     await saveFile(key, bytes, { name: safeName, type: check.type, candidate_id: String(me.id) });
     const text = await extractResumeText(bytes, check.ext);
+    // Spot core systems and licenses in the résumé; only fill fields the candidate left empty.
+    const found = detectBankingBackground(text);
+    const addCore = (me.core_systems || []).length ? me.core_systems : found.core_systems;
+    const addLic = (me.licenses || []).length ? me.licenses : found.licenses;
     await sql`UPDATE candidates SET resume_key = ${key}, resume_name = ${safeName}, resume_type = ${check.type},
-              resume_size = ${bytes.length}, resume_text = ${text} WHERE id = ${me.id}`;
-    return json({ ok: true, text_extracted: !!text });
+              resume_size = ${bytes.length}, resume_text = ${text},
+              core_systems = ${addCore}, licenses = ${addLic} WHERE id = ${me.id}`;
+    return json({ ok: true, text_extracted: !!text, detected: { core_systems: found.core_systems, licenses: found.licenses } });
   }
 
   if (req.method === "GET" && path === "/api/candidate/resume") {
@@ -87,11 +112,14 @@ export default async (req) => {
   if (req.method === "GET" && path === "/api/candidate/matches") {
     const jobs = await sql`
       SELECT id, title, company, location, work_mode, category, salary_min, salary_max, summary, description,
-             (employer_id IS NOT NULL) AS direct
+             core_systems, licenses, (employer_id IS NOT NULL) AS direct
       FROM jobs WHERE status = 'open' AND expires_at > now()`;
     const applied = new Set(
       (await sql`SELECT job_id FROM applications WHERE candidate_id = ${me.id} OR email = ${me.email}`)
         .map((r) => String(r.job_id))
+    );
+    const savedIds = new Set(
+      (await sql`SELECT job_id FROM saved_jobs WHERE candidate_id = ${me.id}`).map((r) => String(r.job_id))
     );
     const { basis, matches } = rankJobs(me, jobs);
     return json({
@@ -101,8 +129,25 @@ export default async (req) => {
         work_mode: job.work_mode, category: job.category, salary_min: job.salary_min,
         salary_max: job.salary_max, direct: job.direct, score, tier, reasons,
         applied: applied.has(String(job.id)),
+        saved: savedIds.has(String(job.id)),
       })),
     });
+  }
+
+  if (req.method === "POST" && path === "/api/candidate/save") {
+    let b;
+    try { b = await req.json(); } catch { return fail("Send JSON."); }
+    const jobId = String(b.job_id || "");
+    if (!/^\d+$/.test(jobId)) return fail("Pick a job to save.");
+    if (b.saved === false) {
+      await sql`DELETE FROM saved_jobs WHERE candidate_id = ${me.id} AND job_id = ${jobId}`;
+      return json({ ok: true, saved: false });
+    }
+    const [job] = await sql`SELECT id FROM jobs WHERE id = ${jobId} AND status = 'open' AND expires_at > now()`;
+    if (!job) return fail("This job is no longer open.", 404);
+    await sql`INSERT INTO saved_jobs (candidate_id, job_id) VALUES (${me.id}, ${job.id})
+              ON CONFLICT (candidate_id, job_id) DO NOTHING`;
+    return json({ ok: true, saved: true });
   }
 
   if (req.method === "POST" && path === "/api/candidate/apply") {

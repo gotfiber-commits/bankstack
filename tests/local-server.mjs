@@ -42,6 +42,12 @@ export async function startLocalServer(port = 8899) {
         res.end(Buffer.from(await response.arrayBuffer()));
         return;
       }
+      // Test fixture: a page that loads fine but says the job is gone (how aggregators and ATSes behave).
+      if (url.pathname === "/test/gone-posting") {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end("<html><body><h1>Senior Teller</h1><p>This job is no longer <b>available</b>. Browse our other openings.</p></body></html>");
+        return;
+      }
       let file = path.join(root, "public", url.pathname === "/" ? "index.html" : url.pathname);
       if (!file.startsWith(path.join(root, "public"))) throw Object.assign(new Error("bad path"), { code: "ENOENT" });
       if ((await stat(file)).isDirectory()) file = path.join(file, "index.html");

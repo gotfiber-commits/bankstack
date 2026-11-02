@@ -1,9 +1,10 @@
-// GET /api/jobs?q=&category=&work_mode=&institution_type=  → list of open jobs
-// GET /api/jobs/:id                                          → one job
+// GET /api/jobs?q=&category=&work_mode=&institution_type=&core_system=&license=  → list of open jobs
+// GET /api/jobs/:id                                                               → one job
 import { db, json, fail } from "../lib/shared.mjs";
+import { CORE_SYSTEMS, LICENSES } from "../lib/banking.mjs";
 
 const PUBLIC_FIELDS = `id, title, company, institution_type, location, work_mode, employment_type, category,
-  salary_min, salary_max, summary, description, apply_url, source_name, source_url,
+  salary_min, salary_max, summary, description, apply_url, source_name, source_url, core_systems, licenses,
   is_featured, posted_at, (employer_id IS NOT NULL) AS direct`;
 
 export default async (req, context) => {
@@ -34,6 +35,8 @@ export default async (req, context) => {
   if (p.get("category")) add("category = ?", p.get("category"));
   if (p.get("work_mode")) add("work_mode = ?", p.get("work_mode"));
   if (p.get("institution_type")) add("institution_type = ?", p.get("institution_type"));
+  if (CORE_SYSTEMS[p.get("core_system")]) add("? = ANY(core_systems)", p.get("core_system"));
+  if (LICENSES[p.get("license")]) add("? = ANY(licenses)", p.get("license"));
 
   const rows = await sql.query(
     `SELECT ${PUBLIC_FIELDS} FROM jobs WHERE ${where.join(" AND ")}

@@ -40,8 +40,19 @@ export async function runAlertDigest(base = process.env.URL || "http://localhost
   return { subscribers: subs.length, sent };
 }
 
-// Closes sourced listings whose original posting is gone (404 or 410).
-// Sites that block bots (403, 429, 5xx) are left open rather than guessed at.
+// Closes sourced listings whose original posting is gone. Two ways a posting dies:
+//  - hard: the page returns 404 or 410
+//  - soft: the page loads fine (200) but says the job is gone — aggregators and most ATSes do this
+// Sites that block bots (403, 429, 5xx) or time out are left open rather than guessed at.
+const GONE_PHRASES = [
+  "no longer available", "no longer active", "no longer accepting applications",
+  "no longer open", "position has been filled", "job has been filled",
+  "job has expired", "job posting has expired", "posting has expired", "this job has expired",
+  "this job is no longer", "this position is no longer", "this posting is no longer",
+  "job has closed", "this position has been closed", "requisition is closed",
+  "job not found", "position not found", "posting not found", "position no longer exists",
+];
+
 export async function runLinkCheck({ limit = 40, timeoutMs = 6000 } = {}) {
   const sql = db();
   const jobs = await sql`
@@ -50,20 +61,23 @@ export async function runLinkCheck({ limit = 40, timeoutMs = 6000 } = {}) {
     ORDER BY last_checked_at NULLS FIRST, id LIMIT ${limit}`;
   const results = { checked: 0, closed: [], unreachable: 0 };
   const check = async (job) => {
-    let status = 0;
-    for (const method of ["HEAD", "GET"]) {
-      try {
-        const res = await fetch(job.source_url, {
-          method, redirect: "follow", signal: AbortSignal.timeout(timeoutMs),
-          headers: { "user-agent": "BankJobzLinkCheck/1.0 (+job board link checker)" },
-        });
-        status = res.status;
-        if (method === "HEAD" && (status === 405 || status === 501)) continue;
-        break;
-      } catch { status = 0; break; }
-    }
+    let status = 0, gone = false;
+    try {
+      const res = await fetch(job.source_url, {
+        redirect: "follow", signal: AbortSignal.timeout(timeoutMs),
+        headers: { "user-agent": "BankJobzLinkCheck/1.0 (+job board link checker)", accept: "text/html,*/*" },
+      });
+      status = res.status;
+      if (status === 200 && (res.headers.get("content-type") || "").includes("html")) {
+        // Strip tags so "no longer <b>available</b>" still matches, then look for the giveaway phrases.
+        const body = (await res.text()).slice(0, 500000)
+          .replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<[^>]*>/g, " ")
+          .replace(/\s+/g, " ").toLowerCase();
+        gone = GONE_PHRASES.some((p) => body.includes(p));
+      }
+    } catch { status = 0; }
     results.checked++;
-    if (status === 404 || status === 410) {
+    if (status === 404 || status === 410 || gone) {
       await sql`UPDATE jobs SET status = 'closed', last_checked_at = now(), updated_at = now() WHERE id = ${job.id}`;
       results.closed.push(job.id);
     } else {

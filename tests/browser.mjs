@@ -79,6 +79,8 @@ try {
   await emp.fill("#p-max", "140,000");
   await emp.fill("#p-summary", "Own the enterprise data model across core, lending and call reporting.");
   await emp.fill("#p-desc", "Lead our lakehouse migration.\nJack Henry or Fiserv core experience is a plus.");
+  await emp.click(".banking-extra summary");
+  await emp.click('.banking-extra .chip-check:has-text("Fiserv DNA")');
   await shot(emp, "03-post-form");
   await emp.click("text=Continue to payment");
   await emp.waitForSelector("#welcome h2:has-text('Your job is live')", { timeout: 15000 });
@@ -90,6 +92,12 @@ try {
   await emp.waitForSelector(".dash-head h1");
   check("dashboard shows the paid posting", (await emp.textContent(".dash")).includes("Senior Data Architect") && (await emp.textContent(".status-pill")).startsWith("Renews"));
   const jobId = (await stack.sql`SELECT id FROM jobs WHERE title = 'Senior Data Architect'`)[0].id;
+  await emp.goto(BASE + "/#jobs");
+  await emp.waitForSelector("#f-core");
+  await emp.selectOption("#f-core", "fiserv-dna");
+  check("core-system filter finds the tagged posting", (await emp.locator(".ledger .job-row").count()) === 1);
+  await emp.goto(BASE + "/#dashboard");
+  await emp.waitForSelector(".dash-head h1");
 
   // ============================================================
   section("Candidate finds the job and applies");
@@ -176,6 +184,66 @@ try {
   check("home page fits a phone screen", !(await other.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1)));
 
   // ============================================================
+  section("Candidate profile hub: sign-up, save a job, tabs");
+  const candP = await newPage();
+  await candP.goto(BASE + "/");
+  await candP.waitForSelector(".home-hero h1");
+  await candP.click("nav >> text=My profile");
+  await candP.waitForSelector("#cstart-form");
+  check("My profile asks new candidates to create a profile", (await candP.textContent(".post-intro h1")).includes("One profile"));
+  await candP.fill("#cs-name", "Casey Banks");
+  await candP.fill("#cs-email", "casey@example.test");
+  await candP.click("text=Email me a sign-in link");
+  await candP.waitForSelector("#cs-msg:not([hidden])");
+  const cloginUrl = stack.outbox().findLast((m) => m.to === "casey@example.test")?.text.match(/https?:\S+clogin=\w+\S*/)?.[0];
+  check("candidate sign-in link emailed", !!cloginUrl);
+  await candP.goto(cloginUrl);
+  await candP.waitForSelector(".profile-tabs");
+  check("email link opens the profile hub with its tabs", (await candP.locator(".profile-tabs a").count()) === 4);
+  await shot(candP, "09-profile-hub");
+
+  await candP.fill("#pr-location", "Florence, AL");
+  await candP.fill("#pr-summary", "Fifteen years running consumer lending teams at community banks.");
+  await candP.locator("#profile-form .chip-check", { hasText: "Lending & credit" }).first().click();
+  await candP.locator("#profile-form .chip-check", { hasText: "talent pool" }).click();
+  await candP.click("text=Save profile");
+  await candP.waitForSelector("#flash:not([hidden])");
+  check("profile saves and opens matches", (await candP.textContent("#flash")).includes("Profile saved"));
+
+  await candP.goto(`${BASE}/jobs/${jobId}`);
+  await candP.waitForSelector("#qa-slot .source-note"); // candidate bits initialized
+  await candP.click("#save-job");
+  await candP.waitForSelector("#save-job:has-text('★ Saved')");
+  check("save button on a job page bookmarks it", true);
+  await candP.click("nav >> text=My profile");
+  await candP.click(".profile-tabs >> text=Saved jobs");
+  await candP.waitForSelector(".match-list .match-row");
+  check("saved job shows under Saved jobs", (await candP.textContent(".match-list")).includes("Lead Data Architect"));
+  await shot(candP, "10-saved-jobs");
+  await candP.click("[data-unsave]");
+  await candP.waitForSelector(".match-list .match-row", { state: "detached" });
+  check("remove clears the saved list", (await candP.locator(".match-list .match-row").count()) === 0);
+  await candP.click(".profile-tabs >> text=Applications");
+  await candP.waitForSelector(".dash .panel");
+  check("applications tab shows its empty state", (await candP.textContent(".dash .panel")).includes("No applications yet"));
+
+  // ============================================================
+  section("Talent pool from the employer's chair");
+  await emp.goto(BASE + "/#dashboard");
+  await emp.waitForSelector("#t-load");
+  await emp.click("#t-load");
+  await emp.waitForSelector(".talent-card");
+  const cardText = await emp.textContent(".talent-card");
+  check("anonymous candidate card appears with their details", cardText.includes("Florence, AL") && cardText.includes("Lending & credit"));
+  check("card never shows a name or email", !cardText.includes("Casey") && !cardText.includes("casey@example.test"));
+  await emp.fill(".talent-card [data-tnote]", "Your lending background fits our team.");
+  await emp.click(".talent-card [data-invite]");
+  await emp.waitForSelector(".talent-card .status-pill");
+  check("invite confirms in place", (await emp.textContent(".talent-card .status-pill")).includes("Invited"));
+  check("candidate got the invite email", stack.outbox().some((m) => m.to === "casey@example.test" && m.subject.includes("would like you to apply")));
+  await shot(emp, "12-talent-pool");
+
+  // ============================================================
   section("Admin console");
   const adm = await newPage();
   await adm.goto(BASE + "/#admin");
@@ -190,7 +258,7 @@ try {
   await adm.waitForTimeout(300);
   const [{ n: closed }] = await stack.sql`SELECT COUNT(*)::int n FROM jobs WHERE status = 'closed'`;
   check("confirmed take down closes the listing", closed === 1);
-  await shot(adm, "09-admin");
+  await shot(adm, "11-admin");
 
   check("no JavaScript errors on any page", pageErrors.length === 0, pageErrors.join(" | "));
 } catch (err) {

@@ -1,7 +1,9 @@
 // Ranks open jobs against a candidate's résumé and profile.
 // Deterministic and explainable: banking-domain phrases by department, word overlap with
 // each posting weighted by how rare the word is across the board, plus the candidate's
-// own department picks, location and work preference. No outside services.
+// own department picks, licenses, core-system experience, location and work preference.
+// No outside services.
+import { CORE_SYSTEMS, LICENSES } from "./banking.mjs";
 
 export const LEXICON = {
   "branch-retail": ["teller", "branch manager", "member service", "customer service", "cash handling", "new accounts", "personal banker", "head teller", "vault", "branch operations", "universal banker", "drive-thru"],
@@ -80,7 +82,20 @@ export function rankJobs(candidate, jobs, limit = 50) {
     // 3. Overall lean of the résumé toward this department
     raw += 3 * ((dept[j.category] || 0) / maxDept);
 
-    // 4. The candidate's own picks and practical fit
+    // 4. Banking-native signals: the strongest predictors in this industry.
+    // Same core system = the bank skips months of training; a required license held = qualified on day one.
+    const coreHits = (j.core_systems || []).filter((s) => (candidate.core_systems || []).includes(s));
+    if (coreHits.length) {
+      raw += Math.min(coreHits.length * 2.5, 5);
+      reasons.unshift(`Runs ${coreHits.map((s) => CORE_SYSTEMS[s] || s).join(", ")} — you've worked on it`);
+    }
+    const licHits = (j.licenses || []).filter((l) => (candidate.licenses || []).includes(l));
+    if (licHits.length) {
+      raw += Math.min(licHits.length * 2, 4);
+      reasons.unshift(`You hold ${licHits.map((l) => LICENSES[l] || l).join(", ")}`);
+    }
+
+    // 5. The candidate's own picks and practical fit
     if (prefs.includes(j.category)) { raw += 2; reasons.push("A department you picked"); }
     const pref = candidate.work_mode_pref || "any";
     if (pref !== "any" && j.work_mode === pref) { raw += 0.75; reasons.push(`${MODE_LABEL[j.work_mode]}, your preference`); }

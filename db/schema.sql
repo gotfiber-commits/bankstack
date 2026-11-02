@@ -124,3 +124,63 @@ CREATE TABLE IF NOT EXISTS candidates (
 
 ALTER TABLE applications ADD COLUMN IF NOT EXISTS candidate_id BIGINT REFERENCES candidates(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS applications_candidate_idx ON applications (candidate_id);
+
+-- Banking-native filters (Nov 2026): core banking systems and licenses/certifications,
+-- on jobs (what the role involves) and candidates (what they've run and what they hold).
+ALTER TABLE jobs       ADD COLUMN IF NOT EXISTS core_systems TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE jobs       ADD COLUMN IF NOT EXISTS licenses     TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS core_systems TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS licenses     TEXT[] NOT NULL DEFAULT '{}';
+
+-- Talent pool (Nov 2026): candidates can opt in to an anonymous, browsable pool.
+-- blocked_employers is a comma-separated list of institution names the candidate hides from.
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS pool_visible     BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS blocked_employers TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS invites (
+  id           BIGSERIAL PRIMARY KEY,
+  employer_id  BIGINT NOT NULL REFERENCES employers(id) ON DELETE CASCADE,
+  candidate_id BIGINT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+  job_id       BIGINT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  note         TEXT,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (employer_id, candidate_id, job_id)
+);
+CREATE INDEX IF NOT EXISTS invites_candidate_idx ON invites (candidate_id);
+
+-- Institution directory (Nov 2026): every active US bank (FDIC) and credit union (NCUA),
+-- synced from their public data by the admin console. Powers /banks/* pages.
+CREATE TABLE IF NOT EXISTS institutions (
+  id               BIGSERIAL PRIMARY KEY,
+  slug             TEXT NOT NULL UNIQUE,            -- first-metro-bank-moulton-al
+  name             TEXT NOT NULL,
+  normalized_name  TEXT NOT NULL,                   -- for matching jobs.company
+  institution_type TEXT NOT NULL CHECK (institution_type IN ('bank','credit-union')),
+  regulator_id     TEXT NOT NULL,                   -- FDIC cert number or NCUA charter number
+  city             TEXT,
+  state            TEXT,                            -- 2-letter
+  asset_thousands  BIGINT,                          -- total assets in thousands of dollars
+  branches         INTEGER,
+  employees        INTEGER,                         -- NCUA rows may carry members here instead; see members
+  members          INTEGER,                         -- credit unions: member count
+  website          TEXT,
+  active           BOOLEAN NOT NULL DEFAULT true,
+  data_as_of       TEXT,                            -- reporting period from the source
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (institution_type, regulator_id)
+);
+CREATE INDEX IF NOT EXISTS institutions_state_idx ON institutions (state, asset_thousands DESC);
+CREATE INDEX IF NOT EXISTS institutions_norm_idx ON institutions (normalized_name);
+
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS institution_id BIGINT REFERENCES institutions(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS jobs_institution_idx ON jobs (institution_id);
+
+-- Saved jobs (Nov 2026): candidates bookmark listings to come back to from their profile.
+CREATE TABLE IF NOT EXISTS saved_jobs (
+  id           BIGSERIAL PRIMARY KEY,
+  candidate_id BIGINT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+  job_id       BIGINT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (candidate_id, job_id)
+);
+CREATE INDEX IF NOT EXISTS saved_jobs_candidate_idx ON saved_jobs (candidate_id);

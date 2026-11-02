@@ -6,8 +6,10 @@
 // POST /api/admin/maintenance         → run the expiry + dead-link check now
 import {
   db, stripe, json, fail, safeEqual, validateJob, clean, isUrl, INSTITUTION_TYPES, PRICE_CENTS,
+  findInstitutionId,
 } from "../lib/shared.mjs";
 import { runLinkCheck, closeExpired } from "../lib/tasks.mjs";
+import { syncInstitutions } from "../lib/institutions.mjs";
 
 export default async (req) => {
   const auth = (req.headers.get("authorization") || "").replace(/^Bearer\s+/, "");
@@ -42,7 +44,14 @@ export default async (req) => {
              COUNT(j.id) FILTER (WHERE j.status = 'open')::int AS live_postings
       FROM employers e LEFT JOIN jobs j ON j.employer_id = e.id
       WHERE e.api_token IS NOT NULL GROUP BY e.id ORDER BY e.created_at DESC`;
-    return json({ ...stats, ...counts, mrr_cents: stats.renewing * PRICE_CENTS, jobs, employers });
+    let directory = { banks: 0, credit_unions: 0 };
+    try {
+      [directory] = await sql`
+        SELECT COUNT(*) FILTER (WHERE institution_type = 'bank')::int         AS banks,
+               COUNT(*) FILTER (WHERE institution_type = 'credit-union')::int AS credit_unions
+        FROM institutions WHERE active`;
+    } catch { /* directory tables not migrated yet */ }
+    return json({ ...stats, ...counts, directory, mrr_cents: stats.renewing * PRICE_CENTS, jobs, employers });
   }
 
   if (req.method !== "POST") return fail("Method not allowed", 405);
@@ -50,6 +59,14 @@ export default async (req) => {
   if (path === "/api/admin/maintenance") {
     const expired = await closeExpired();
     return json({ expired, ...(await runLinkCheck()) });
+  }
+
+  // Institution directory sync: one page per call; the admin page loops until next_offset is null.
+  if (path === "/api/admin/institutions/sync") {
+    let b;
+    try { b = await req.json(); } catch { return fail("Send JSON."); }
+    try { return json(await syncInstitutions(b.source, Number(b.offset) || 0)); }
+    catch (err) { return fail(`Directory sync failed: ${err.message}`, 502); }
   }
 
   if (path === "/api/admin/jobs") {
@@ -62,12 +79,15 @@ export default async (req) => {
     if (!company) return fail("Add the employer's name.");
     if (!isUrl(sourceUrl)) return fail("Add the original posting's link.");
     const type = INSTITUTION_TYPES.includes(b.institution_type) ? b.institution_type : "bank";
+    const instId = await findInstitutionId(sql, company);
     const rows = await sql`
       INSERT INTO jobs (title, company, institution_type, location, work_mode, employment_type, category,
-                        salary_min, salary_max, summary, description, apply_url, source_name, source_url, expires_at)
+                        salary_min, salary_max, summary, description, apply_url, core_systems, licenses,
+                        institution_id, source_name, source_url, expires_at)
       VALUES (${job.title}, ${company}, ${type}, ${job.location}, ${job.work_mode}, ${job.employment_type},
               ${job.category}, ${job.salary_min}, ${job.salary_max}, ${job.summary}, ${job.description},
-              ${sourceUrl}, ${clean(b.source_name, 80) || new URL(sourceUrl).hostname}, ${sourceUrl},
+              ${sourceUrl}, ${job.core_systems}, ${job.licenses}, ${instId},
+              ${clean(b.source_name, 80) || new URL(sourceUrl).hostname}, ${sourceUrl},
               now() + interval '30 days')
       ON CONFLICT (source_url) DO NOTHING RETURNING id`;
     return rows.length ? json({ ok: true, id: rows[0].id }, 201) : fail("That posting is already on the board.", 409);

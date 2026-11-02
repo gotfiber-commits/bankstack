@@ -10,13 +10,14 @@ import pg from "pg";
 
 const ADMIN_URL = process.env.TEST_DATABASE_ADMIN_URL || "postgres://postgres@127.0.0.1:5432/postgres";
 const DB_URL = ADMIN_URL.replace(/\/[^/]*$/, "/bankstack_e2e");
-const PORT = 8899, STRIPE_PORT = 12111, BASE = `http://localhost:${PORT}`;
+const PORT = 8899, STRIPE_PORT = 12111, REGISTRY_PORT = 8977, BASE = `http://localhost:${PORT}`;
 
 Object.assign(process.env, {
   DATABASE_URL: DB_URL, DB_DRIVER: "pg", URL: BASE,
   STRIPE_SECRET_KEY: "sk_test_e2e", STRIPE_PRICE_ID: "price_e2e_99", STRIPE_WEBHOOK_SECRET: "whsec_e2e_secret",
   STRIPE_API_HOST: "localhost", STRIPE_API_PORT: String(STRIPE_PORT), STRIPE_API_PROTOCOL: "http",
   ADMIN_TOKEN: "admin_e2e_token", LOCAL_BLOBS_DIR: mkdtempSync(path.join(os.tmpdir(), "bankstack-blobs-")),
+  FDIC_API_BASE: `http://localhost:${REGISTRY_PORT}`, NCUA_API_BASE: `http://localhost:${REGISTRY_PORT}`,
 });
 delete process.env.RESEND_API_KEY;
 
@@ -54,7 +55,9 @@ execFileSync(process.execPath, ["scripts/seed.mjs"], { env: process.env, stdio: 
 
 const { startFakeStripe } = await import("./fake-stripe.mjs");
 const { startLocalServer } = await import("./local-server.mjs");
+const { startFakeRegistries, FAKE_BANKS, FAKE_CUS } = await import("./fake-registries.mjs");
 const fakeStripe = await startFakeStripe(STRIPE_PORT);
+const registries = await startFakeRegistries(REGISTRY_PORT);
 const { server, routes } = await startLocalServer(PORT);
 const { db } = await import("../netlify/lib/shared.mjs");
 const { runAlertDigest, runLinkCheck } = await import("../netlify/lib/tasks.mjs");
@@ -405,6 +408,96 @@ try {
   check("profile lists their applications", r.data.applications.length >= 2 && r.data.candidate.resume_name === "Casey Banks Resume.pdf",
     r.data.applications?.length);
 
+  // Saved jobs (bookmarks on the profile)
+  r = await call("POST", "/api/candidate/save", { token: ck, body: { job_id: sourcedMatch.id } });
+  check("candidate saves a job", r.status === 200 && r.data.saved === true, r.data);
+  r = await call("POST", "/api/candidate/save", { token: ck, body: { job_id: sourcedMatch.id } });
+  check("saving the same job twice is fine", r.status === 200 && r.data.saved === true);
+  r = await call("POST", "/api/candidate/save", { token: ck, body: { job_id: 999999 } });
+  check("saving an unknown job is refused", r.status === 404);
+  r = await call("GET", "/api/candidate", { token: ck });
+  check("one bookmark on the profile, with the job's details", r.data.saved.length === 1
+    && String(r.data.saved[0].job_id) === String(sourcedMatch.id) && r.data.saved[0].open === true
+    && !!r.data.saved[0].title && !!r.data.saved[0].saved_at, r.data.saved);
+  r = await call("GET", "/api/candidate/matches", { token: ck });
+  check("saved flag shows on matches", r.data.matches.find((m) => m.id === sourcedMatch.id)?.saved === true);
+  r = await call("POST", "/api/candidate/save", { token: ck, body: { job_id: sourcedMatch.id, saved: false } });
+  check("unsave removes the bookmark", r.status === 200 && r.data.saved === false);
+  r = await call("GET", "/api/candidate", { token: ck });
+  check("removed bookmark is gone", r.data.saved.length === 0);
+
+  // ================================================================
+  section("Banking-native filters: core systems and licenses");
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
+    ...jobFields, title: "Consumer Loan Officer", category: "lending-credit", company: "Muscle Shoals National Bank",
+    source_url: `${BASE}/app.css`, source_name: "Test",
+    core_systems: ["jack-henry-silverlake", "bogus-core"], licenses: ["nmls", "fake-license"] } });
+  const nmlsJobId = r.data.id;
+  check("listing accepts banking specifics", r.status === 201);
+  r = await call("GET", `/api/jobs/${nmlsJobId}`);
+  check("unknown ids are dropped, valid ones kept", r.data.core_systems.length === 1
+    && r.data.core_systems[0] === "jack-henry-silverlake" && r.data.licenses.length === 1 && r.data.licenses[0] === "nmls", r.data);
+  r = await call("GET", "/api/jobs?core_system=jack-henry-silverlake");
+  check("core-system filter finds exactly the tagged job", r.data.jobs.length === 1 && r.data.jobs[0].id === nmlsJobId);
+  r = await call("GET", "/api/jobs?license=nmls");
+  check("license filter works", r.data.jobs.some((j) => j.id === nmlsJobId));
+  r = await call("GET", "/api/jobs?core_system=not-a-system");
+  check("an unknown filter value is ignored, not an error", r.status === 200 && r.data.jobs.length > 1);
+  r = await call("PUT", `/api/employer/jobs/${jobA2}`, { token: keyA, body: {
+    ...jobFields, title: "Branch Manager", category: "branch-retail", core_systems: ["fiserv-dna"], licenses: [] } });
+  check("employer edit saves banking specifics", r.status === 200, r.data);
+  r = await call("GET", `/api/employer/jobs/${jobA2}`, { token: keyA });
+  check("…and they show on the posting", r.data.core_systems?.length === 1 && r.data.core_systems[0] === "fiserv-dna", r.data);
+  r = await call("GET", "/api/candidate/matches", { token: ck });
+  const nmlsMatch = r.data.matches.find((m) => m.id === nmlsJobId);
+  check("a held license is the first reason on a match", nmlsMatch?.reasons[0] === "You hold NMLS (MLO)", nmlsMatch?.reasons);
+
+  // ================================================================
+  section("Talent pool: anonymity, blocking and invites");
+  r = await call("GET", "/api/employer/talent", { token: keyB });
+  check("pool opens for an employer with a live posting; empty before anyone opts in",
+    r.status === 200 && r.data.candidates.length === 0, r.data);
+  check("their open postings come along for the invite picker", r.data.jobs.some((j) => j.title === "Mortgage Loan Officer"));
+
+  const caseyProfile = { name: "Casey Banks", location: "Florence, AL", work_mode_pref: "hybrid",
+    categories: ["lending-credit"], summary: "Ten years in consumer lending at a community bank.",
+    licenses: ["nmls"], core_systems: [], linkedin_url: "https://linkedin.com/in/caseybanks" };
+  r = await call("PUT", "/api/candidate", { token: ck, body: { ...caseyProfile, pool_visible: true, blocked_employers: "" } });
+  check("candidate opts into the pool", r.status === 200);
+
+  r = await call("GET", "/api/employer/talent", { token: keyB });
+  const card = r.data.candidates[0];
+  check("their anonymous card appears", r.data.candidates.length === 1 && card.location === "Florence, AL", r.data.candidates);
+  check("the card carries no identifying details", card && !("name" in card) && !("email" in card)
+    && !("phone" in card) && !("linkedin_url" in card) && card.has_resume === true, card);
+  r = await call("GET", "/api/employer/talent?category=lending-credit&state=al&license=nmls", { token: keyB });
+  check("category, state and license filters match the card", r.data.candidates.length === 1);
+  r = await call("GET", "/api/employer/talent?core_system=jack-henry-silverlake", { token: keyB });
+  check("a core system they don't have excludes them", r.data.candidates.length === 0);
+
+  outbox().length = 0;
+  r = await call("POST", `/api/employer/talent/${card.id}/invite`, { token: keyB, body: { job_id: jobB, note: "Your lending background fits this role." } });
+  check("invite sends", r.status === 200 && r.data.ok === true && r.data.duplicate === false, r.data);
+  const inviteMail = lastEmailTo("casey@example.test");
+  check("invite email names the employer and protects the candidate",
+    !!inviteMail?.subject.includes("Tennessee Valley CU") && inviteMail.text.includes("have not seen your name"));
+  r = await call("POST", `/api/employer/talent/${card.id}/invite`, { token: keyB, body: { job_id: jobB } });
+  check("inviting twice to the same job is caught", r.data.duplicate === true);
+  r = await call("POST", `/api/employer/talent/${card.id}/invite`, { token: keyB, body: { job_id: jobA } });
+  check("can't invite to another employer's posting", r.status === 400);
+  r = await call("GET", "/api/candidate", { token: ck });
+  check("candidate sees the invite with its note", r.data.invites.length === 1
+    && r.data.invites[0].company === "Tennessee Valley CU" && r.data.invites[0].note === "Your lending background fits this role.", r.data.invites);
+
+  r = await call("PUT", "/api/candidate", { token: ck, body: { ...caseyProfile, pool_visible: true, blocked_employers: "tennessee valley, Some Other Bank" } });
+  r = await call("GET", "/api/employer/talent", { token: keyB });
+  check("a partial name on the block list hides the card from that employer", r.data.candidates.length === 0);
+  r = await call("POST", `/api/employer/talent/${card.id}/invite`, { token: keyB, body: { job_id: jobB } });
+  check("a blocked employer can't invite them either", r.status === 404);
+  r = await call("PUT", "/api/candidate", { token: ck, body: { ...caseyProfile, pool_visible: false, blocked_employers: "" } });
+  r = await call("GET", "/api/employer/talent", { token: keyB });
+  check("leaving the pool removes the card", r.data.candidates.length === 0);
+
   // ================================================================
   section("Admin console and maintenance");
   r = await call("GET", "/api/admin");
@@ -422,22 +515,79 @@ try {
   const liveId = r.data.id;
   r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: { ...jobFields, company: "Live Bank", source_url: `${BASE}/index.html` } });
   check("duplicate source link is refused", r.status === 409);
-  await sql`UPDATE jobs SET last_checked_at = now() WHERE id NOT IN (${goneId}, ${liveId})`;
-  r = await runLinkCheck({ limit: 2 });
-  const statuses = Object.fromEntries((await sql`SELECT id, status FROM jobs WHERE id IN (${goneId}, ${liveId})`).map((x) => [x.id, x.status]));
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
+    ...jobFields, title: "Senior Teller", category: "branch-retail", company: "Soft Gone Bank", source_url: `${BASE}/test/gone-posting`, source_name: "Test" } });
+  const softId = r.data.id;
+  await sql`UPDATE jobs SET last_checked_at = now() WHERE id NOT IN (${goneId}, ${liveId}, ${softId})`;
+  r = await runLinkCheck({ limit: 3 });
+  const statuses = Object.fromEntries((await sql`SELECT id, status FROM jobs WHERE id IN (${goneId}, ${liveId}, ${softId})`).map((x) => [x.id, x.status]));
   check("dead-link check closes a removed posting", r.closed.includes(goneId) && statuses[goneId] === "closed", r);
+  check("…and a page that loads but says the job is gone", r.closed.includes(softId) && statuses[softId] === "closed", r);
   check("…and leaves a working one open", statuses[liveId] === "open");
   r = await call("POST", `/api/admin/jobs/${goneId}/reopen`, { token: "admin_e2e_token" });
   check("admin can reopen a sourced listing", r.status === 200 && (await sql`SELECT status FROM jobs WHERE id = ${goneId}`)[0].status === "open");
   const subB = (await sql`SELECT stripe_subscription_id FROM jobs WHERE id = ${jobB}`)[0].stripe_subscription_id;
   r = await call("POST", `/api/admin/jobs/${jobB}/close`, { token: "admin_e2e_token" });
   check("admin take-down of a paid posting also cancels its billing", r.status === 200 && fakeStripe.subs.get(subB).status === "canceled");
+  r = await call("GET", "/api/employer/talent", { token: keyB });
+  check("the talent pool closes when the employer's last posting ends", r.status === 403);
+
+  // ================================================================
+  section("Institution directory (FDIC + NCUA)");
+  r = await call("POST", "/api/admin/institutions/sync", { body: { source: "fdic", offset: 0 } });
+  check("directory sync needs the admin key", r.status === 401);
+  r = await call("POST", "/api/admin/institutions/sync", { token: "admin_e2e_token", body: { source: "fdic", offset: 0 } });
+  check("FDIC sync imports every active bank in one pass",
+    r.status === 200 && r.data.imported === FAKE_BANKS.length && r.data.total === FAKE_BANKS.length && r.data.next_offset === null, r.data);
+  r = await call("POST", "/api/admin/institutions/sync", { token: "admin_e2e_token", body: { source: "ncua", offset: 0 } });
+  check("NCUA sync imports the credit unions", r.data.imported === FAKE_CUS.length && r.data.next_offset === null, r.data);
+  r = await call("POST", "/api/admin/institutions/sync", { token: "admin_e2e_token", body: { source: "fdic", offset: 0 } });
+  const [{ n: instCount }] = await sql`SELECT COUNT(*)::int n FROM institutions`;
+  check("re-running the sync refreshes instead of duplicating",
+    r.data.imported === FAKE_BANKS.length && instCount === FAKE_BANKS.length + FAKE_CUS.length, { imported: r.data.imported, instCount });
+  const slugs = (await sql`SELECT slug FROM institutions WHERE name = 'First State Bank' ORDER BY regulator_id`).map((x) => x.slug);
+  check("two same-named institutions get distinct, stable slugs",
+    slugs[0] === "first-state-bank-springfield-il" && slugs[1] === "first-state-bank-springfield-il-1003", slugs);
+  const [shoals] = await sql`SELECT * FROM institutions WHERE institution_type = 'bank' AND regulator_id = '1001'`;
+  check("ALL-CAPS regulator names become readable", shoals.name === "Shoals Community Bank" && shoals.state === "AL" && shoals.city === "Florence");
+  const [linkedJob] = await sql`SELECT institution_id FROM jobs WHERE id = ${jobA}`;
+  check("existing postings link to their institution by name", String(linkedJob.institution_id) === String(shoals.id));
+
+  r = await call("GET", "/banks");
+  check("directory front page lists institutions and states",
+    r.status === 200 && String(r.data).includes("Shoals Community Bank") && String(r.data).includes("/banks/al")
+    && String(r.data).includes(`${FAKE_BANKS.length + FAKE_CUS.length} institutions`));
+  r = await call("GET", "/banks/al");
+  check("state page shows that state's institutions, largest first",
+    r.status === 200 && String(r.data).includes("River City National Bank") && String(r.data).includes("$1.9B")
+    && String(r.data).includes("Tennessee Valley Credit Union")
+    && String(r.data).indexOf("River City National Bank") < String(r.data).indexOf("Shoals Community Bank"));
+  r = await call("GET", "/banks/shoals-community-bank-florence-al");
+  const shoalsPage = String(r.data);
+  check("institution page: facts, FDIC cert, and the bank's open roles via name match",
+    r.status === 200 && shoalsPage.includes("Jobs at Shoals Community Bank") && shoalsPage.includes("FDIC cert 1001")
+    && shoalsPage.includes("$742M") && shoalsPage.includes("Teller") && !shoalsPage.includes("Branch Manager"),
+    { status: r.status, jobs: [...shoalsPage.matchAll(/class="t">([^<]+)/g)].map((x) => x[1]) });
+  r = await call("GET", "/banks/muscle-shoals-national-bank-muscle-shoals-al");
+  check("an institution's open listings appear on its page",
+    r.status === 200 && String(r.data).includes("Consumer Loan Officer"));
+  r = await call("GET", "/banks/tennessee-valley-credit-union-muscle-shoals-al");
+  check("credit union page renders cleanly without optional figures",
+    r.status === 200 && String(r.data).includes("NCUA charter 60001") && !String(r.data).includes("total assets"));
+  r = await call("GET", "/banks/not-a-real-bank");
+  check("unknown institution 404s with noindex", r.status === 404 && String(r.data).includes("noindex"));
+  r = await call("GET", "/sitemap.xml");
+  check("sitemap carries the directory pages",
+    String(r.data).includes("/banks/al</loc>") && String(r.data).includes("/banks/shoals-community-bank-florence-al</loc>"));
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  check("admin console shows directory counts",
+    r.data.directory.banks === FAKE_BANKS.length && r.data.directory.credit_unions === FAKE_CUS.length, r.data.directory);
 } catch (err) {
   failed++;
   results.push(`\n  ✗ crashed: ${err.stack}`);
 } finally {
   console.log(results.join("\n"));
   console.log(`\n${passed} passed, ${failed} failed`);
-  server.close(); fakeStripe.server.close(); await sql.end?.();
+  server.close(); fakeStripe.server.close(); registries.server.close(); await sql.end?.();
   process.exit(failed ? 1 : 0);
 }
