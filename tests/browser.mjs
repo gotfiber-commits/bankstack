@@ -79,9 +79,14 @@ try {
   await emp.fill("#p-max", "140,000");
   await emp.fill("#p-summary", "Own the enterprise data model across core, lending and call reporting.");
   await emp.fill("#p-desc", "Lead our lakehouse migration.\nJack Henry or Fiserv core experience is a plus.");
-  await emp.click(".banking-extra summary");
-  await emp.click('.banking-extra .chip-check:has-text("Fiserv DNA")');
-  await emp.click(".ai-box summary");
+  await emp.click(".banking-extra:not(.ai-box) summary");
+  await emp.click('.banking-extra:not(.ai-box) .chip-check:has-text("Fiserv DNA")');
+  check("AI draft box sits open directly below the job title",
+    await emp.evaluate(() => {
+      const box = document.querySelector(".ai-box");
+      const titleField = document.getElementById("p-title").closest(".field");
+      return box?.open === true && titleField.nextElementSibling === box;
+    }));
   await emp.fill("#ai-notes", "wires and ACH, team of four");
   await emp.click("#ai-draft");
   await emp.waitForSelector("#ai-msg:not([hidden])");

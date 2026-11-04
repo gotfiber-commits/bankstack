@@ -197,9 +197,10 @@
     `<option value="${k}"${k === sel ? " selected" : ""}>${esc(v)}</option>`).join("");
 
   // Role fields shared by "Post a job", "Edit posting" and the admin's "Add a sourced listing".
-  function roleFields(j = {}, prefix = "p") {
+  function roleFields(j = {}, prefix = "p", afterTitle = "") {
     return `
       <div class="field"><label for="${prefix}-title">Job title</label><input id="${prefix}-title" name="title" required placeholder="Senior Loan Officer" value="${esc(j.title)}"></div>
+      ${afterTitle}
       <div class="row-2">
         <div class="field"><label for="${prefix}-location">Location</label><input id="${prefix}-location" name="location" required placeholder="Birmingham, AL" value="${esc(j.location)}"></div>
         <div class="field"><label for="${prefix}-mode">Arrangement</label><select id="${prefix}-mode" name="work_mode">${options(MODES, j.work_mode)}</select></div>
@@ -235,11 +236,11 @@
   function aiDraftBox() {
     if (!state.ai || state.demo) return "";
     return `
-      <details class="banking-extra ai-box">
-        <summary>✨ Let AI draft the summary and description</summary>
+      <details class="banking-extra ai-box" open>
+        <summary>✨ Skip the writing — let AI draft this posting</summary>
         <div class="field" style="margin-top:0.8rem"><label for="ai-notes">Rough notes (optional)</label>
           <textarea id="ai-notes" rows="3" maxlength="2000" placeholder="Shift hours, team size, must-have experience, benefits — fragments are fine."></textarea>
-          <span class="hint">Uses the title, location, pay and department you've filled in above. You review and edit everything before it's posted.</span></div>
+          <span class="hint">The job title above is all it needs. Notes here — or location, pay and department below — make the draft sharper. It writes the summary and description; you review and edit before posting.</span></div>
         <button class="btn secondary" id="ai-draft" type="button">Draft it</button>
         <div class="msg" id="ai-msg" hidden></div>
       </details>`;
@@ -654,8 +655,7 @@
           </div>
           <div class="field"><label for="c-email">Work email</label><input id="c-email" name="email" type="email" autocomplete="email" required><span class="hint">Receipts, applicant notifications and sign-in links go here.</span></div>`}
           <h2>The role</h2>
-          ${roleFields({}, "p")}
-          ${aiDraftBox()}
+          ${roleFields({}, "p", aiDraftBox())}
           ${honeypot}
           <div class="checkout-line"><span>Due today, then monthly</span><strong>${PRICE}.00</strong></div>
           <button class="btn btn-lg" type="submit">Continue to payment</button>
@@ -925,8 +925,7 @@
         <form class="panel form" id="edit-form" novalidate style="margin-top:1rem">
           <h1 style="font-size:1.5rem">Edit posting</h1>
           <p class="source-note">${esc(j.company)} · ${jobCode(j.id)}. Changes show on the board right away; billing doesn't change.</p>
-          ${roleFields(j, "e")}
-          ${aiDraftBox()}
+          ${roleFields(j, "e", aiDraftBox())}
           <div class="cta-row"><button class="btn" type="submit">Save changes</button><a class="btn secondary" href="#dashboard">Cancel</a></div>
           <div class="msg" id="edit-msg" hidden></div>
         </form>
