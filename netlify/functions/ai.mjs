@@ -14,6 +14,15 @@ const ip = (req) => req.headers.get("x-nf-client-connection-ip")
 const money = (n) => (n ? "$" + Number(n).toLocaleString() : null);
 
 export default async (req) => {
+  try {
+    return await handle(req);
+  } catch (err) {
+    console.error("AI assistant error:", err?.status || "", err?.message, err?.stack?.split("\n")[1] || "");
+    return fail(err?.status ? err.message : "The writing assistant hit a problem. Try again in a minute.", err?.status || 500);
+  }
+};
+
+async function handle(req) {
   if (req.method !== "POST") return fail("Method not allowed", 405);
   if (!aiEnabled()) return fail("The writing assistant isn't set up on this site yet.", 503);
   const path = new URL(req.url).pathname.replace(/\/+$/, "");
@@ -42,12 +51,12 @@ export default async (req) => {
     ].filter(Boolean).join("\n");
 
     const text = await askClaude({
-      maxTokens: 900,
+      maxTokens: 700,
       system: `You write job postings for BankJobz, a job board for US banks and credit unions. Write in plain, specific language a working banker respects — no buzzwords, no exclamation marks. Use only the facts provided; never invent benefits, requirements, systems or figures that weren't given. Keep wording consistent with equal-opportunity employment: describe the work and the qualifications, never the kind of person (no age, family-status, nationality or similar cues). Output EXACTLY two sections, nothing else:
 SUMMARY:
 one or two sentences (under 350 characters) selling the role honestly — this shows in the job list.
 DESCRIPTION:
-the full posting: a short intro paragraph, then "What you'll do" with 4-7 bullet lines starting with "- ", then "What you'll bring" with 3-6 bullet lines, then one closing line inviting the application. Plain text, no markdown headings besides those two literal labels.`,
+the full posting: a short intro paragraph, then "What you'll do" with 4-6 bullet lines starting with "- ", then "What you'll bring" with 3-5 bullet lines, then one closing line inviting the application. Plain text, no markdown headings besides those two literal labels.`,
       user: facts,
     });
     const parts = parseSections(text, ["SUMMARY", "DESCRIPTION"]);
@@ -101,6 +110,6 @@ ${(me.resume_text || "").slice(0, 12000)}`,
   }
 
   return fail("Not found", 404);
-};
+}
 
 export const config = { path: ["/api/ai/*"] };

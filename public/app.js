@@ -82,7 +82,10 @@
     if (opts.cauth && ckey()) headers.authorization = "Bearer " + ckey();
     const res = await fetch(path, { ...opts, headers });
     const type = res.headers.get("content-type") || "";
-    if (!type.includes("application/json")) throw new Error("The server isn't reachable right now.");
+    if (!type.includes("application/json")) {
+      throw Object.assign(new Error(res.ok ? "The server sent an unexpected reply. Refresh and try again."
+        : `The server hit a problem (error ${res.status}). Try again in a minute.`), { status: res.status });
+    }
     const data = await res.json();
     if (!res.ok) throw Object.assign(new Error(data.error || "Something went wrong. Try again."), { status: res.status });
     return data;
@@ -590,24 +593,70 @@
     });
   }
 
-  // ---------- post a job ----------
+  // ---------- employer accounts ----------
   function signInPanel() {
     return `
       <div class="panel signin">
-        <h2>Posted with us before?</h2>
+        <h2>Already have an account?</h2>
         <form class="form" id="link-form" novalidate>
           <div class="field"><label for="l-email">Work email</label><input id="l-email" name="email" type="email" autocomplete="email" placeholder="you@yourbank.com"></div>
           <button class="btn secondary" type="submit">Email me a sign-in link</button>
           <div class="msg" id="link-msg" hidden></div>
         </form>
-        <details><summary>Use a posting key instead</summary>
+        <details><summary>Use an account key instead</summary>
           <form class="form" id="key-form" novalidate style="margin-top:0.75rem">
-            <div class="field"><label for="k-key">Posting key</label><input id="k-key" name="key" placeholder="bsk_…" autocomplete="off"></div>
+            <div class="field"><label for="k-key">Account key</label><input id="k-key" name="key" placeholder="bsk_…" autocomplete="off"></div>
             <button class="btn secondary" type="submit">Sign in</button>
             <div class="msg" id="key-msg" hidden></div>
           </form>
         </details>
       </div>`;
+  }
+
+  function signUpPanel() {
+    return `
+      <form class="panel form" id="signup-form" novalidate>
+        <h2>Create your employer account</h2>
+        <p class="source-note">Free to create. You get your own dashboard to post jobs, review applicants and manage billing. Each posting is ${PRICE}/month, only when you post.</p>
+        <div class="row-2">
+          <div class="field"><label for="su-name">Your name</label><input id="su-name" name="contact_name" autocomplete="name" required></div>
+          <div class="field"><label for="su-title">Your title (optional)</label><input id="su-title" name="contact_title" autocomplete="organization-title" placeholder="HR Manager"></div>
+        </div>
+        <div class="row-2">
+          <div class="field"><label for="su-company">Institution name</label><input id="su-company" name="company" autocomplete="organization" required></div>
+          <div class="field"><label for="su-type">Type</label><select id="su-type" name="institution_type">${options(INST, "bank")}</select></div>
+        </div>
+        <div class="field"><label for="su-email">Work email</label><input id="su-email" name="email" type="email" autocomplete="email" required>
+          <span class="hint">We'll send a link to confirm it. Applicant notifications and receipts go here too.</span></div>
+        ${honeypot}
+        <button class="btn btn-lg" type="submit">Create account</button>
+        <div class="msg" id="signup-msg" hidden></div>
+      </form>`;
+  }
+
+  function bindSignUp() {
+    const form = document.getElementById("signup-form");
+    if (!form) return;
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById("signup-msg");
+      const data = Object.fromEntries(new FormData(form));
+      if (!data.contact_name.trim()) return showMsg(msg, "Enter your name.", true);
+      if (!data.company.trim()) return showMsg(msg, "Enter your institution's name.", true);
+      if (!/^\S+@\S+\.\S+$/.test(data.email)) return showMsg(msg, "Enter a valid work email.", true);
+      if (state.demo) return showMsg(msg, "Preview mode: on the live site this creates your account and emails a confirmation link.", false);
+      const btn = form.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        await api("/api/auth/signup", { method: "POST", body: JSON.stringify(data) });
+        form.innerHTML = `<h2>Check your email</h2>
+          <p>We sent a confirmation link to <b>${esc(data.email.trim())}</b>. Click it to open your dashboard and post your first job. It works for 30 minutes.</p>
+          <p class="source-note">Nothing there? Check spam, or use "Email me a sign-in link" to get a fresh one.</p>`;
+      } catch (err) {
+        showMsg(msg, err.message, true);
+        btn.disabled = false;
+      }
+    });
   }
 
   function bindSignIn(after) {
@@ -616,44 +665,49 @@
       e.preventDefault();
       const msg = document.getElementById("link-msg");
       const email = document.getElementById("l-email").value.trim();
-      if (!/^\S+@\S+\.\S+$/.test(email)) return showMsg(msg, "Enter the email you posted with.", true);
+      if (!/^\S+@\S+\.\S+$/.test(email)) return showMsg(msg, "Enter your work email.", true);
       if (state.demo) return showMsg(msg, "Preview mode: on the live site this emails you a sign-in link.", false);
       try {
         await api("/api/auth/request", { method: "POST", body: JSON.stringify({ email }) });
-        showMsg(msg, `If ${email} has posted with us, a sign-in link is on its way. It works for 30 minutes.`, false);
+        showMsg(msg, `If ${email} has an account, a sign-in link is on its way. It works for 30 minutes.`, false);
       } catch (err) { showMsg(msg, err.message, true); }
     });
     const keyForm = document.getElementById("key-form");
     if (keyForm) keyForm.addEventListener("submit", (e) => {
       e.preventDefault();
       const v = document.getElementById("k-key").value.trim();
-      if (!v.startsWith("bsk_")) return showMsg(document.getElementById("key-msg"), "Posting keys start with bsk_.", true);
+      if (!v.startsWith("bsk_")) return showMsg(document.getElementById("key-msg"), "Account keys start with bsk_.", true);
       store.set("bankstack.key", v);
       updateNav();
       after();
     });
   }
 
-  function viewPost() {
-    const signedIn = !!key();
+  const postIntro = (extra = "") => `
+    <section class="post-intro">
+      <p class="eyebrow">Post a job</p>
+      <h1>${PRICE} per posting, per month.</h1>
+      <p class="lede">Create your free employer account, describe the role, and pay by card through Stripe. It goes live right away as a Direct listing above sourced jobs, with its own page in Google's job search, and renews monthly until you cancel it from your dashboard.</p>
+      ${extra}
+    </section>`;
+
+  async function viewPost() {
+    // Hiring managers need an account first: it's where their postings, applicants and billing live.
+    if (!key()) {
+      view.innerHTML = `<div class="wrap post">${postIntro(signInPanel())}${signUpPanel()}</div>`;
+      bindSignIn(() => { location.hash = "post"; route(); });
+      bindSignUp();
+      return;
+    }
+    let acct = null;
+    if (!state.demo) {
+      try { acct = (await api("/api/employer", { auth: true })).account; }
+      catch (err) { if (err.status === 401) return signedOut(err.message); }
+    }
     view.innerHTML = `
       <div class="wrap post">
-        <section class="post-intro">
-          <p class="eyebrow">Post a job</p>
-          <h1>${PRICE} per posting, per month.</h1>
-          <p class="lede">Describe the role, pay by card through Stripe, and it goes live right away as a Direct listing above sourced jobs, with its own page in Google's job search. It renews monthly until you cancel it from your dashboard.</p>
-          ${signedIn ? "" : signInPanel()}
-        </section>
+        ${postIntro(acct ? `<p class="source-note">Posting as <b>${esc(acct.company)}</b>${acct.contact_name ? ` · ${esc(acct.contact_name)}` : ""}. Billed to your account. <a href="#dashboard">Back to dashboard</a></p>` : "")}
         <form class="panel form" id="post-form" novalidate>
-          ${signedIn ? `<p class="source-note">Signed in. This posting is billed to your account. <a href="#dashboard">Dashboard</a></p>` : `
-          <h2>Your institution</h2>
-          <div class="row-2">
-            <div class="field"><label for="c-company">Institution name</label><input id="c-company" name="company" autocomplete="organization" required></div>
-            <div class="field"><label for="c-type">Type</label>
-              <select id="c-type" name="institution_type">${options(INST, "bank")}</select>
-            </div>
-          </div>
-          <div class="field"><label for="c-email">Work email</label><input id="c-email" name="email" type="email" autocomplete="email" required><span class="hint">Receipts, applicant notifications and sign-in links go here.</span></div>`}
           <h2>The role</h2>
           ${roleFields({}, "p", aiDraftBox())}
           ${honeypot}
@@ -663,11 +717,7 @@
         </form>
       </div>`;
 
-    bindSignIn(viewPost);
-    bindAiDraft("p", () => ({
-      company: document.getElementById("c-company")?.value,
-      institution_type: document.getElementById("c-type")?.value,
-    }));
+    bindAiDraft("p", () => ({ company: acct?.company, institution_type: acct?.institution_type }));
 
     document.getElementById("post-form").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -677,9 +727,6 @@
       const data = Object.fromEntries(pfd);
       data.core_systems = pfd.getAll("core_systems");
       data.licenses = pfd.getAll("licenses");
-      if (!signedIn && (!data.company.trim() || !/^\S+@\S+\.\S+$/.test(data.email))) {
-        return showMsg(msg, "Enter your institution's name and a valid work email.", true);
-      }
       if (!data.title.trim() || !data.location.trim() || !data.summary.trim()) {
         return showMsg(msg, "Add a job title, location and summary.", true);
       }
@@ -687,9 +734,10 @@
       const btn = form.querySelector("button[type=submit]");
       btn.disabled = true;
       try {
-        const r = await api("/api/checkout", { method: "POST", auth: signedIn, body: JSON.stringify(data) });
+        const r = await api("/api/checkout", { method: "POST", auth: true, body: JSON.stringify(data) });
         location.href = r.url;
       } catch (err) {
+        if (err.status === 401) return signedOut(err.message);
         showMsg(msg, err.message, true);
         btn.disabled = false;
       }
@@ -714,13 +762,15 @@
       box.innerHTML = `
         <h2>Thanks, ${esc(r.company)}. ${live ? "Your job is live." : "Payment received."}</h2>
         ${r.job ? `<p><b>${esc(r.job.title)}</b> ${live ? "is now listed as a Direct posting and renews monthly until you cancel it." : "will appear as soon as Stripe confirms the payment."}</p>` : ""}
-        <p>You're signed in on this device. On another device, use <b>Email me a sign-in link</b> on the Post a job page, or paste this posting key:</p>
-        <div class="key-box" id="the-key">${esc(r.token)}</div>
+        <p>Applicants will arrive in your dashboard and by email. You can sign in from any device with your work email.</p>
         <div class="cta-row">
-          <button class="btn secondary" id="copy-key" type="button">Copy key</button>
-          ${live ? `<a class="btn secondary" href="${jobHref(r.job.id)}">View your posting</a>` : ""}
           <a class="btn" href="#dashboard">Go to dashboard</a>
-        </div>`;
+          ${live ? `<a class="btn secondary" href="${jobHref(r.job.id)}">View your posting</a>` : ""}
+        </div>
+        <details style="margin-top:1rem"><summary class="source-note">Account key (optional, for signing in without email)</summary>
+          <div class="key-box" id="the-key">${esc(r.token)}</div>
+          <button class="btn secondary" id="copy-key" type="button">Copy key</button>
+        </details>`;
       document.getElementById("copy-key").addEventListener("click", async (e) => {
         try { await navigator.clipboard.writeText(r.token); e.target.textContent = "Copied"; }
         catch { getSelection().selectAllChildren(document.getElementById("the-key")); }
@@ -742,9 +792,10 @@
   function signedOut(message) {
     store.del("bankstack.key");
     updateNav();
-    view.innerHTML = `<div class="wrap post"><section class="post-intro"><h1>Sign in to your dashboard</h1>
-      ${message ? `<p class="msg error">${esc(message)}</p>` : ""}</section>${signInPanel()}</div>`;
+    view.innerHTML = `<div class="wrap post"><section class="post-intro"><p class="eyebrow">Employers</p><h1>Sign in to your dashboard</h1>
+      ${message ? `<p class="msg error">${esc(message)}</p>` : ""}${signInPanel()}</section>${signUpPanel()}</div>`;
     bindSignIn(() => { location.hash = "dashboard"; route(); });
+    bindSignUp();
   }
 
   async function downloadResume(appId, name, btn) {
@@ -776,15 +827,21 @@
         <div class="dash-head">
           <div style="display:grid;gap:0.3rem">
             <h1 style="font-size:1.8rem">${esc(d.company)}</h1>
-            <span class="source-note">${live} live ${live === 1 ? "posting" : "postings"} · ${PRICE}/month each · ${newCount} new ${newCount === 1 ? "applicant" : "applicants"}</span>
+            <span class="source-note">${d.account?.contact_name ? `${esc(d.account.contact_name)}${d.account.contact_title ? `, ${esc(d.account.contact_title)}` : ""} · ` : ""}${live} live ${live === 1 ? "posting" : "postings"} · ${PRICE}/month each · ${newCount} new ${newCount === 1 ? "applicant" : "applicants"}</span>
           </div>
           <div class="cta-row">
-            <a class="btn" href="#post">Post another job</a>
-            <button class="btn secondary" id="billing" type="button">Cards &amp; invoices</button>
+            <a class="btn" href="#post">${d.jobs.length ? "Post another job" : "Post a job"}</a>
+            ${d.account?.has_billing ? `<button class="btn secondary" id="billing" type="button">Cards &amp; invoices</button>` : ""}
             <button class="linkish" id="signout" type="button">Sign out</button>
           </div>
         </div>
         <p class="source-note" id="act-msg" aria-live="polite"></p>
+        ${d.jobs.length ? "" : `
+        <section class="panel first-run">
+          <h2>Welcome to your dashboard${d.account?.contact_name ? `, ${esc(d.account.contact_name.split(" ")[0])}` : ""}</h2>
+          <p>This is where your postings, applicants and billing live. Post your first job — the AI assistant can write it from just the title — and applications will show up here and in your inbox.</p>
+          <a class="btn btn-lg" href="#post">Post your first job · ${PRICE}/mo</a>
+        </section>`}
         <section>
           <h2 class="dash-title">Your postings</h2>
           <div class="table-wrap"><table class="stack-table">
@@ -832,13 +889,43 @@
           </div>
           <div id="talent-list" class="talent-list"></div>
         </section>
+        <section>
+          <h2 class="dash-title">Your account</h2>
+          <form class="panel form account-form" id="account-form" novalidate>
+            <div class="row-2">
+              <div class="field"><label for="ac-name">Your name</label><input id="ac-name" name="contact_name" value="${esc(d.account?.contact_name || "")}" required></div>
+              <div class="field"><label for="ac-title">Your title</label><input id="ac-title" name="contact_title" value="${esc(d.account?.contact_title || "")}" placeholder="HR Manager"></div>
+            </div>
+            <div class="row-2">
+              <div class="field"><label for="ac-company">Institution name</label><input id="ac-company" name="company" value="${esc(d.account?.company || d.company)}" required>
+                <span class="hint">Applies to new postings; live ones keep the name they were posted under.</span></div>
+              <div class="field"><label for="ac-type">Type</label><select id="ac-type" name="institution_type">${options(INST, d.account?.institution_type || "bank")}</select></div>
+            </div>
+            <div class="row-2">
+              <div class="field"><label for="ac-phone">Phone (optional)</label><input id="ac-phone" name="phone" type="tel" value="${esc(d.account?.phone || "")}"></div>
+              <div class="field"><label>Sign-in &amp; notification email</label><input value="${esc(d.email)}" disabled></div>
+            </div>
+            <div class="cta-row"><button class="btn secondary" type="submit">Save account</button></div>
+            <div class="msg" id="account-msg" hidden></div>
+          </form>
+        </section>
       </div>`;
 
     const say = (t) => (document.getElementById("act-msg").textContent = t);
+    document.getElementById("account-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById("account-msg");
+      const data = Object.fromEntries(new FormData(e.currentTarget));
+      if (!data.contact_name.trim() || !data.company.trim()) return showMsg(msg, "Your name and institution are required.", true);
+      try {
+        await api("/api/employer/account", { method: "PUT", auth: true, body: JSON.stringify(data) });
+        showMsg(msg, "Account saved.", false);
+      } catch (err) { showMsg(msg, err.message, true); }
+    });
     document.getElementById("signout").addEventListener("click", () => {
       store.del("bankstack.key"); updateNav(); location.hash = "home";
     });
-    document.getElementById("billing").addEventListener("click", async (e) => {
+    document.getElementById("billing")?.addEventListener("click", async (e) => {
       e.target.disabled = true;
       try { const r = await api("/api/employer/billing", { method: "POST", auth: true }); location.href = r.url; }
       catch (err) { e.target.disabled = false; say(err.message); }
@@ -1493,7 +1580,8 @@
 
   // ---------- router ----------
   function updateNav() {
-    document.getElementById("nav-dashboard").hidden = !key();
+    // Always visible: signed-in employers see their Dashboard; everyone else gets a clear way back in.
+    document.getElementById("nav-dashboard").textContent = key() ? "Dashboard" : "Employer sign in";
   }
 
   function route() {

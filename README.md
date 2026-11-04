@@ -18,6 +18,7 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 - **Weekly job alerts** by specialty, with email confirmation and one-click unsubscribe.
 
 **Employers**
+- **Employer accounts**: hiring managers create a free account first (name, title, institution, work email), confirm by emailed link, and land on their own dashboard. Posting requires a signed-in account; the institution comes from the account, so the post form is just the role. "Employer sign in" is always in the top nav — returning managers on any device get an emailed sign-in link straight back to their postings. Each email address is its own account with its own dashboard.
 - **Post a job**: fill in the role, pay $99 through Stripe Checkout, and it goes live as a Direct listing above sourced jobs. Optional banking specifics — the core system the role touches and licenses required — make the posting filterable and boost its match rank for the right candidates.
 - **Talent pool** in the dashboard: browse opted-in candidates anonymously, filter by department, state, core system or license, and invite one to a posting with a note. Included with any live posting.
 - Each posting is its own monthly subscription. **Cancel posting** stops renewal (it stays up through the paid month); **Keep renewing** undoes it.
@@ -58,7 +59,7 @@ netlify/lib/             shared (db, Stripe, validation), banking (core systems,
                          institutions (FDIC/NCUA sync), match, email, files (résumés), extract, tasks
 db/schema.sql            every table; safe to re-run — it upgrades older databases in place
 scripts/seed.mjs         creates the schema and loads the seed jobs
-tests/                   e2e.mjs (148 API checks), browser.mjs (44 checks in real Chromium),
+tests/                   e2e.mjs (176 API checks), browser.mjs (59 checks in real Chromium),
                          fake Stripe, fake FDIC/NCUA, local server
 ```
 
@@ -101,9 +102,9 @@ Both suites run the real function code against a real Postgres database, with a 
 ```bash
 # Postgres on localhost (e.g. docker run -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16)
 export TEST_DATABASE_ADMIN_URL=postgres://postgres@127.0.0.1:5432/postgres
-npm run test:e2e          # 163 checks: posting, payment, renewals, sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
+npm run test:e2e          # 176 checks: posting, payment, renewals, sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
 npx playwright install chromium
-npm run test:browser      # 49 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
+npm run test:browser      # 59 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
 ```
 
 ## API
@@ -117,7 +118,9 @@ npm run test:browser      # 49 checks clicking through the real pages, desktop a
 | POST | `/api/checkout` | job fields (+ `company, email, institution_type` when not signed in) → `{ url }` |
 | GET | `/api/session?session_id=` | after Stripe → `{ company, token, job }` |
 | POST | `/api/stripe-webhook` | Stripe only |
-| POST | `/api/auth/request`, `/api/auth/verify` | emailed sign-in link |
+| POST | `/api/auth/signup` | `{ contact_name, contact_title?, company, institution_type, email }` → confirmation email |
+| POST | `/api/auth/request`, `/api/auth/verify` | emailed sign-in link; verify confirms the account on first use |
+| PUT | `/api/employer/account` | edit name, title, phone, institution |
 | POST | `/api/candidate-auth/request`, `/verify` | candidate sign-in links |
 | GET/PUT | `/api/candidate` | Bearer ck_ token: profile + their applications |
 | POST/GET | `/api/candidate/resume` | upload (extracts text) / download own résumé |

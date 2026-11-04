@@ -65,12 +65,35 @@ try {
   await shot(emp, "02-jobs");
 
   // ============================================================
-  section("Employer posts a job and pays");
+  section("New hiring manager creates an account");
   await emp.click("nav >> text=Post a job");
+  await emp.waitForSelector("#signup-form");
+  check("Post a job asks a new employer to create an account first",
+    (await emp.locator("#post-form").count()) === 0 && (await emp.textContent("#signup-form h2")).includes("Create your employer account"));
+  await emp.fill("#su-name", "Morgan Hale");
+  await emp.fill("#su-title", "HR Manager");
+  await emp.fill("#su-company", "Shoals Community Bank");
+  await emp.selectOption("#su-type", "bank");
+  await emp.fill("#su-email", "hr@shoalsbank.test");
+  await shot(emp, "03a-create-account");
+  await emp.click("text=Create account");
+  await emp.waitForSelector("#signup-form h2:has-text('Check your email')");
+  check("sign-up asks them to confirm by email", true);
+  const confirmUrl = stack.outbox().findLast((m) => m.to === "hr@shoalsbank.test" && m.subject.includes("Confirm"))
+    ?.text.match(/https?:\S+login=\w+\S*/)?.[0];
+  check("confirmation email carries the link", !!confirmUrl);
+  await emp.goto(confirmUrl);
+  await emp.waitForSelector(".first-run");
+  check("the link opens their own empty dashboard with a welcome",
+    (await emp.textContent(".dash-head")).includes("Shoals Community Bank") && (await emp.textContent(".first-run")).includes("Morgan"));
+  check("account details are on the dashboard", (await emp.inputValue("#ac-name")) === "Morgan Hale" && (await emp.inputValue("#ac-title")) === "HR Manager");
+  await shot(emp, "03b-new-dashboard");
+
+  section("Employer posts a job and pays");
+  await emp.click(".first-run a.btn");
   await emp.waitForSelector("#post-form");
-  await emp.fill("#c-company", "Shoals Community Bank");
-  await emp.fill("#c-email", "hr@shoalsbank.test");
-  await emp.selectOption("#c-type", "bank");
+  check("signed-in post form skips the institution questions",
+    (await emp.locator("#c-company, #c-email").count()) === 0 && (await emp.textContent(".post-intro")).includes("Posting as Shoals Community Bank"));
   await emp.fill("#p-title", "Senior Data Architect");
   await emp.fill("#p-location", "Florence, AL");
   await emp.selectOption("#p-mode", "hybrid");
@@ -97,7 +120,7 @@ try {
   await emp.waitForSelector("#welcome h2:has-text('Your job is live')", { timeout: 15000 });
   check("Stripe checkout returns to a 'job is live' page", true);
   const key = (await emp.textContent("#the-key")).trim();
-  check("posting key shown", /^bsk_/.test(key));
+  check("account key is tucked away, not pushed", /^bsk_/.test(key) && !(await emp.isVisible("#the-key")));
   await shot(emp, "04-welcome");
   await emp.click("text=Go to dashboard");
   await emp.waitForSelector(".dash-head h1");
@@ -109,6 +132,26 @@ try {
   check("core-system filter finds the tagged posting", (await emp.locator(".ledger .job-row").count()) === 1);
   await emp.goto(BASE + "/#dashboard");
   await emp.waitForSelector(".dash-head h1");
+
+  // ============================================================
+  section("Returning employer on a new device finds their posting");
+  const back = await newPage(); // fresh browser: no saved sign-in
+  await back.goto(BASE + "/");
+  await back.waitForSelector(".home-hero h1");
+  check("signed-out visitors see 'Employer sign in' in the top nav", (await back.textContent("#nav-dashboard")) === "Employer sign in");
+  await back.click("#nav-dashboard");
+  await back.waitForSelector("#link-form");
+  await back.fill("#l-email", "hr@shoalsbank.test");
+  await back.click("text=Email me a sign-in link");
+  await back.waitForSelector("#link-msg:not([hidden])");
+  const backUrl = stack.outbox().findLast((m) => m.to === "hr@shoalsbank.test" && m.subject.includes("sign-in"))
+    ?.text.match(/https?:\S+login=\w+\S*/)?.[0];
+  check("a sign-in link is emailed", !!backUrl);
+  await back.goto(backUrl);
+  await back.waitForSelector(".dash-head h1");
+  check("the link lands on their dashboard with the paid posting",
+    (await back.textContent(".dash")).includes("Senior Data Architect") && (await back.textContent("#nav-dashboard")) === "Dashboard");
+  await shot(back, "04b-returning-employer");
 
   // ============================================================
   section("Candidate finds the job and applies");
@@ -291,7 +334,7 @@ try {
   check("no JavaScript errors on any page", pageErrors.length === 0, pageErrors.join(" | "));
 } catch (err) {
   failed++;
-  lines.push(`\n  ✗ crashed: ${err.stack}`);
+  lines.push(`\n  ✗ crashed: ${err.stack}${pageErrors.length ? `\n  page errors: ${pageErrors.join(" | ")}` : ""}`);
 } finally {
   console.log(lines.join("\n"));
   console.log(`\n${passed} passed, ${failed} failed. Screenshots in ${SHOTS}/`);

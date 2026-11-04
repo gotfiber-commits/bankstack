@@ -1,9 +1,8 @@
 // POST /api/checkout — create a job posting and send the employer to Stripe to pay for it ($99/month).
-// New employers send { company, email, institution_type, ...job }.
-// Returning employers send "Authorization: Bearer <posting key>" and just the job fields.
+// Requires a signed-in employer account ("Authorization: Bearer <account key>"); the institution
+// name and type come from the account, so the form only carries the job fields.
 import {
-  db, json, fail, isEmail, clean, validateJob, createJobCheckout, employerFromRequest, INSTITUTION_TYPES,
-  findInstitutionId,
+  db, json, fail, clean, validateJob, createJobCheckout, employerFromRequest, findInstitutionId,
 } from "../lib/shared.mjs";
 
 export default async (req) => {
@@ -12,29 +11,12 @@ export default async (req) => {
   try { body = await req.json(); } catch { return fail("Send the form as JSON."); }
 
   if (clean(body.company_website)) return fail("Something went wrong. Try again."); // honeypot
+  const sql = db();
+  const employer = await employerFromRequest(req);
+  if (!employer) return fail("Create your employer account, or sign in, before posting a job.", 401);
+
   const { job, error } = validateJob(body);
   if (error) return fail(error);
-
-  const sql = db();
-  let employer = await employerFromRequest(req);
-
-  if (!employer) {
-    const company = clean(body.company, 160);
-    const email = clean(body.email, 200).toLowerCase();
-    const type = INSTITUTION_TYPES.includes(body.institution_type) ? body.institution_type : "bank";
-    if (!company) return fail("Enter your institution's name.");
-    if (!isEmail(email)) return fail("Enter a valid work email.");
-
-    const [existing] = await sql`SELECT * FROM employers WHERE email = ${email}`;
-    if (existing?.api_token) {
-      return fail("This email already has an account. Sign in with your posting key to add another job.", 409);
-    }
-    [employer] = existing
-      ? await sql`UPDATE employers SET company = ${company}, institution_type = ${type}
-                  WHERE id = ${existing.id} RETURNING *`
-      : await sql`INSERT INTO employers (company, email, institution_type)
-                  VALUES (${company}, ${email}, ${type}) RETURNING *`;
-  }
 
   const instId = await findInstitutionId(sql, employer.company);
   const [row] = await sql`

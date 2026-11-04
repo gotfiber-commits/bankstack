@@ -10,7 +10,7 @@
 // POST /api/employer/billing                  → Stripe billing portal (cards, invoices)
 import {
   db, stripe, json, fail, siteUrl, employerFromRequest, createJobCheckout, syncJobFromSubscription,
-  validateJob, APPLICATION_STATUSES, clean, normalizeName,
+  validateJob, APPLICATION_STATUSES, clean, normalizeName, INSTITUTION_TYPES,
 } from "../lib/shared.mjs";
 import { CORE_SYSTEMS, LICENSES } from "../lib/banking.mjs";
 import { loadFile } from "../lib/files.mjs";
@@ -48,7 +48,31 @@ export default async (req) => {
       FROM applications a JOIN jobs j ON j.id = a.job_id
       WHERE j.employer_id = ${employer.id}
       ORDER BY a.created_at DESC LIMIT 500`;
-    return json({ company: employer.company, email: employer.email, jobs, applications });
+    return json({
+      company: employer.company, email: employer.email,
+      account: {
+        company: employer.company, email: employer.email, institution_type: employer.institution_type,
+        contact_name: employer.contact_name, contact_title: employer.contact_title, phone: employer.phone,
+        member_since: employer.created_at, has_billing: !!employer.stripe_customer_id,
+      },
+      jobs, applications,
+    });
+  }
+
+  // Account details: the hiring manager's name, title, phone, and the institution.
+  // Changing the institution name applies to future postings; live ones keep the name they were posted under.
+  if (path === "/api/employer/account" && req.method === "PUT") {
+    let b;
+    try { b = await req.json(); } catch { return fail("Send JSON."); }
+    const contactName = clean(b.contact_name, 120);
+    const company = clean(b.company, 160);
+    if (!contactName) return fail("Enter your name.");
+    if (!company) return fail("Enter your institution's name.");
+    const type = INSTITUTION_TYPES.includes(b.institution_type) ? b.institution_type : employer.institution_type;
+    await sql`UPDATE employers SET contact_name = ${contactName}, contact_title = ${clean(b.contact_title, 120) || null},
+                phone = ${clean(b.phone, 40) || null}, company = ${company}, institution_type = ${type}
+              WHERE id = ${employer.id}`;
+    return json({ ok: true });
   }
 
   // Billing portal

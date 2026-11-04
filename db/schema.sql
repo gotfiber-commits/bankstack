@@ -175,6 +175,14 @@ CREATE INDEX IF NOT EXISTS institutions_norm_idx ON institutions (normalized_nam
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS institution_id BIGINT REFERENCES institutions(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS jobs_institution_idx ON jobs (institution_id);
 
+-- Employer accounts (Nov 2026): hiring managers create an account (and confirm their email)
+-- before posting, with their own name and title on it. Accounts that already paid count as confirmed.
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS contact_name  TEXT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS contact_title TEXT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS phone         TEXT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS verified_at   TIMESTAMPTZ;
+UPDATE employers SET verified_at = created_at WHERE verified_at IS NULL AND api_token IS NOT NULL;
+
 -- AI writing assistant (Nov 2026): per-user daily usage log, for rate limiting.
 CREATE TABLE IF NOT EXISTS ai_usage (
   id         BIGSERIAL PRIMARY KEY,

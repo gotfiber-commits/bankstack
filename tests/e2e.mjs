@@ -136,12 +136,50 @@ try {
   check("unknown job returns 404", r.status === 404);
 
   // ================================================================
-  section("Posting a job and paying $99/month");
-  r = await call("POST", "/api/checkout", { body: { ...jobFields, title: "" , company: "Shoals Community Bank", email: "hr@shoalsbank.test" } });
+  section("Employer accounts, then posting a job at $99/month");
+  // Creates an account the way a hiring manager does: sign up, click the emailed link.
+  const signUp = async (fields) => {
+    const res = await call("POST", "/api/auth/signup", { body: fields });
+    const email = fields.email.toLowerCase();
+    const token = lastEmailTo(email)?.text.match(/login=([a-f0-9]{48})/)?.[1];
+    const verified = token ? await call("POST", "/api/auth/verify", { body: { token } }) : null;
+    return { res, mail: lastEmailTo(email), key: verified?.data?.token };
+  };
+
+  r = await call("POST", "/api/checkout", { body: { ...jobFields, company: "Shoals Community Bank", email: "hr@shoalsbank.test" } });
+  check("posting without an account is refused", r.status === 401 && /account/i.test(r.data.error), r.data);
+  r = await call("POST", "/api/auth/signup", { body: { company: "Shoals Community Bank", email: "hr@shoalsbank.test" } });
+  check("sign-up needs the manager's name", r.status === 400 && /name/i.test(r.data.error));
+  outbox().length = 0;
+  const shoalsAcct = await signUp({ contact_name: "Morgan Hale", contact_title: "HR Manager", company: "Shoals Community Bank",
+    email: "HR@shoalsbank.test", institution_type: "bank" });
+  check("sign-up emails a confirmation link", shoalsAcct.res.status === 200 && !!shoalsAcct.mail?.subject.includes("Confirm"), shoalsAcct.mail?.subject);
+  const keyA = shoalsAcct.key;
+  check("confirming the email opens the account", /^bsk_/.test(keyA || ""), keyA);
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("new account has its own empty dashboard with the manager's details",
+    r.status === 200 && r.data.jobs.length === 0 && r.data.account.contact_name === "Morgan Hale"
+    && r.data.account.contact_title === "HR Manager" && r.data.account.has_billing === false, r.data.account);
+
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/signup", { body: { contact_name: "Impostor", company: "Impostor Bank", email: "hr@shoalsbank.test" } });
+  check("signing up again with a taken email just sends that inbox a sign-in link",
+    r.status === 200 && !!lastEmailTo("hr@shoalsbank.test")?.subject.includes("sign-in"));
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("…and can't overwrite the account", r.data.company === "Shoals Community Bank" && r.data.account.contact_name === "Morgan Hale");
+
+  r = await call("PUT", "/api/employer/account", { token: keyA, body: { contact_name: "", company: "Shoals Community Bank" } });
+  check("account edit requires a name", r.status === 400);
+  r = await call("PUT", "/api/employer/account", { token: keyA, body: { contact_name: "Morgan Hale", contact_title: "VP, Human Resources",
+    company: "Shoals Community Bank", institution_type: "bank", phone: "256-555-0100" } });
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("account edits save", r.data.account.contact_title === "VP, Human Resources" && r.data.account.phone === "256-555-0100");
+
+  r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "" } });
   check("missing title is rejected", r.status === 400 && /title/i.test(r.data.error), r.data);
-  r = await call("POST", "/api/checkout", { body: { ...jobFields, salary_min: 200000, salary_max: 100000, company: "Shoals Community Bank", email: "hr@shoalsbank.test" } });
+  r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, salary_min: 200000, salary_max: 100000 } });
   check("salary min > max is rejected", r.status === 400, r.data);
-  r = await call("POST", "/api/checkout", { body: { ...jobFields, company: "Shoals Community Bank", email: "HR@shoalsbank.test", institution_type: "bank" } });
+  r = await call("POST", "/api/checkout", { token: keyA, body: jobFields });
   check("checkout starts and returns a Stripe URL", r.status === 200 && r.data.url?.startsWith("https://checkout.stripe.test"), r.data);
   const jobA = r.data.job_id;
   const sessA = lastSession();
@@ -153,17 +191,17 @@ try {
   r = await pay(sessA);
   check("signed checkout webhook accepted", r.status === 200 && r.data.received);
   r = await call("GET", `/api/jobs/${jobA}`);
-  check("paid posting is live", r.status === 200 && r.data.direct === true && r.data.salary_min === 115000, r.data);
+  check("paid posting is live under the account's institution", r.status === 200 && r.data.direct === true
+    && r.data.salary_min === 115000 && r.data.company === "Shoals Community Bank", r.data);
   check("employer gets a 'posting is live' email", !!lastEmailTo("hr@shoalsbank.test")?.subject.includes("live"));
 
   r = await call("GET", `/api/session?session_id=${sessA.id}`);
-  check("checkout return issues a posting key", r.status === 200 && /^bsk_/.test(r.data.token) && r.data.job?.status === "open", r.data);
-  const keyA = r.data.token;
+  check("returning from Stripe keeps the same account", r.status === 200 && r.data.token === keyA && r.data.job?.status === "open", r.data);
   r = await call("GET", "/api/jobs");
   check("direct posting is listed first", r.data.jobs[0].id === jobA && r.data.jobs.length === SEED_LEN + 1);
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("billing appears on the account once paid", r.data.account.has_billing === true && r.data.jobs.length === 1);
 
-  r = await call("POST", "/api/checkout", { body: { ...jobFields, company: "Impostor", email: "hr@shoalsbank.test" } });
-  check("someone else can't post (and get the key) with an existing email", r.status === 409, r.data);
   r = await call("POST", "/api/stripe-webhook", { body: { type: "checkout.session.completed" } });
   check("webhook without a valid signature is rejected", r.status === 400);
 
@@ -273,10 +311,11 @@ try {
 
   // ================================================================
   section("Privacy between employers");
-  r = await call("POST", "/api/checkout", { body: { ...jobFields, title: "Mortgage Loan Officer", category: "lending-credit", company: "Tennessee Valley CU", email: "jobs@tvcu.test", institution_type: "credit-union" } });
+  const tvcu = await signUp({ contact_name: "Riley Shaw", company: "Tennessee Valley CU", email: "jobs@tvcu.test", institution_type: "credit-union" });
+  const keyB = tvcu.key;
+  r = await call("POST", "/api/checkout", { token: keyB, body: { ...jobFields, title: "Mortgage Loan Officer", category: "lending-credit" } });
   const jobB = r.data.job_id;
   await pay(lastSession());
-  const keyB = (await call("GET", `/api/session?session_id=${lastSession().id}`)).data.token;
   check("second employer is set up", /^bsk_/.test(keyB) && keyB !== keyA);
   r = await call("GET", `/api/employer/applications/${appRow.id}/resume`, { token: keyB });
   check("employer B can't download A's applicant résumé", r.status === 404);
@@ -547,6 +586,22 @@ try {
   delete process.env.AI_DAILY_LIMIT;
   const [{ n: aiRows }] = await sql`SELECT COUNT(*)::int n FROM ai_usage WHERE who LIKE 'candidate:%'`;
   check("usage is logged for the budget", aiRows >= 2, aiRows);
+
+  // The failure modes that once surfaced as "server isn't reachable": each must now be a clear JSON message.
+  await sql`DROP TABLE ai_usage`;
+  r = await call("POST", "/api/ai/posting", { body: { title: "Teller", notes: "self-heal check" } });
+  check("a missing usage table heals itself instead of crashing", r.status === 200
+    && (await sql`SELECT to_regclass('ai_usage') AS t`)[0].t !== null, r.data);
+  process.env.ANTHROPIC_TIMEOUT_MS = "500";
+  r = await call("POST", "/api/ai/posting", { body: { title: "Teller", notes: "SLOW_TEST" } });
+  check("a slow AI answer comes back as a clear JSON timeout, not a crash",
+    r.status === 504 && /took too long/.test(r.data?.error || ""), { status: r.status, data: r.data });
+  delete process.env.ANTHROPIC_TIMEOUT_MS;
+  r = await call("POST", "/api/ai/posting", { body: { title: "Teller", notes: "BADKEY_TEST" } });
+  check("a rejected API key names the fix for the site owner", /ANTHROPIC_API_KEY/.test(r.data?.error || ""), r.data);
+  r = await call("POST", "/api/ai/posting", { body: { title: "Teller", notes: "NOCREDIT_TEST" } });
+  check("an out-of-credit account says so", /out of credit/.test(r.data?.error || ""), r.data);
+
 
   // ================================================================
   section("Admin console and maintenance");

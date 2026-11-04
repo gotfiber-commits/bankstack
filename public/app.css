@@ -67,7 +67,7 @@ h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 
 .nav { display: flex; gap: 0.25rem; margin-left: auto; }
 .nav a {
   text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.9rem;
-  padding: 0.35rem 0.65rem; border-radius: var(--radius);
+  padding: 0.35rem 0.65rem; border-radius: var(--radius); white-space: nowrap;
 }
 .nav a[aria-current="page"] { color: var(--fg); background: var(--accent-soft); }
 .nav a.cta { color: var(--accent-ink); background: var(--accent); }
@@ -193,7 +193,9 @@ td.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; text
   .row-2 { grid-template-columns: 1fr; }
   .job-row { grid-template-columns: 1fr; }
   .job-side { text-align: left; justify-items: start; grid-auto-flow: column; gap: 0.75rem; }
-  .nav a { padding: 0.35rem 0.5rem; }
+  /* Phones: the nav takes its own full-width row and wraps whole links, never words. */
+  .nav { width: 100%; margin-left: 0; flex-wrap: wrap; gap: 0.3rem; }
+  .nav a { padding: 0.4rem 0.6rem; font-size: 0.86rem; }
 }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 
@@ -428,6 +430,12 @@ tr.is-new td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .banking-extra { border: 1px solid var(--line); border-radius: var(--radius); padding: 0.65rem 0.9rem; }
 .banking-extra summary { cursor: pointer; font-weight: 600; font-size: 0.92rem; }
 .banking-extra .field { margin-top: 0.8rem; }
+
+/* Employer dashboard: first-run welcome and account form */
+.first-run { display: grid; gap: 0.6rem; justify-items: start; border-color: var(--accent); background: var(--accent-soft); }
+.first-run h2 { margin: 0; }
+.first-run p { margin: 0; max-width: 46rem; }
+.account-form { max-width: 48rem; }
 
 /* Employer talent pool */
 .talent-filters { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
