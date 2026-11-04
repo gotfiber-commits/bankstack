@@ -6,7 +6,7 @@
 // POST /api/admin/maintenance         → run the expiry + dead-link check now
 import {
   db, stripe, json, fail, safeEqual, validateJob, clean, isUrl, INSTITUTION_TYPES, PRICE_CENTS,
-  findInstitutionId,
+  findInstitutionId, isAggregatorUrl,
 } from "../lib/shared.mjs";
 import { runLinkCheck, closeExpired } from "../lib/tasks.mjs";
 import { syncInstitutions } from "../lib/institutions.mjs";
@@ -78,6 +78,9 @@ export default async (req) => {
     const sourceUrl = clean(b.source_url, 500);
     if (!company) return fail("Add the employer's name.");
     if (!isUrl(sourceUrl)) return fail("Add the original posting's link.");
+    if (isAggregatorUrl(sourceUrl)) {
+      return fail("That link is on a third-party job board — those pages go stale and break. Use the institution's own careers or ATS page instead.");
+    }
     const type = INSTITUTION_TYPES.includes(b.institution_type) ? b.institution_type : "bank";
     const instId = await findInstitutionId(sql, company);
     const rows = await sql`

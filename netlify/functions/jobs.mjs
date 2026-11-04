@@ -2,6 +2,7 @@
 // GET /api/jobs/:id                                                               → one job
 import { db, json, fail } from "../lib/shared.mjs";
 import { CORE_SYSTEMS, LICENSES } from "../lib/banking.mjs";
+import { aiEnabled } from "../lib/ai.mjs";
 
 const PUBLIC_FIELDS = `id, title, company, institution_type, location, work_mode, employment_type, category,
   salary_min, salary_max, summary, description, apply_url, source_name, source_url, core_systems, licenses,
@@ -43,7 +44,7 @@ export default async (req, context) => {
      ORDER BY is_featured DESC, (employer_id IS NOT NULL) DESC, posted_at DESC LIMIT 200`,
     args
   );
-  return json({ jobs: rows });
+  return json({ jobs: rows, ai: aiEnabled() });
 };
 
 export const config = { path: ["/api/jobs", "/api/jobs/:id"] };

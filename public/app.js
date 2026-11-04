@@ -109,6 +109,7 @@
     try {
       const data = await api("/api/jobs");
       state.jobs = data.jobs;
+      state.ai = !!data.ai;
       state.demo = false;
     } catch {
       const res = await fetch("seed-jobs.json");
@@ -228,6 +229,43 @@
   function chipChecks(name, map, checked = []) {
     return Object.entries(map).map(([k, v]) =>
       `<label class="chip-check"><input type="checkbox" name="${name}" value="${k}"${(checked || []).includes(k) ? " checked" : ""}><span>${esc(v)}</span></label>`).join("");
+  }
+
+  // ---------- AI writing assistant (shown only when the site has a key configured) ----------
+  function aiDraftBox() {
+    if (!state.ai || state.demo) return "";
+    return `
+      <details class="banking-extra ai-box">
+        <summary>✨ Let AI draft the summary and description</summary>
+        <div class="field" style="margin-top:0.8rem"><label for="ai-notes">Rough notes (optional)</label>
+          <textarea id="ai-notes" rows="3" maxlength="2000" placeholder="Shift hours, team size, must-have experience, benefits — fragments are fine."></textarea>
+          <span class="hint">Uses the title, location, pay and department you've filled in above. You review and edit everything before it's posted.</span></div>
+        <button class="btn secondary" id="ai-draft" type="button">Draft it</button>
+        <div class="msg" id="ai-msg" hidden></div>
+      </details>`;
+  }
+
+  function bindAiDraft(prefix, extra = () => ({})) {
+    const btn = document.getElementById("ai-draft");
+    if (!btn) return;
+    btn.addEventListener("click", async () => {
+      const msg = document.getElementById("ai-msg");
+      const val = (id) => document.getElementById(`${prefix}-${id}`)?.value || "";
+      if (!val("title").trim()) return showMsg(msg, "Give the role a title first — the assistant builds around it.", true);
+      btn.disabled = true;
+      btn.textContent = "Writing…";
+      try {
+        const r = await api("/api/ai/posting", { method: "POST", auth: !!key(), body: JSON.stringify({
+          title: val("title"), location: val("location"), category: val("cat"),
+          work_mode: val("mode"), salary_min: val("min"), salary_max: val("max"),
+          notes: document.getElementById("ai-notes").value, ...extra() }) });
+        document.getElementById(`${prefix}-summary`).value = r.summary;
+        document.getElementById(`${prefix}-desc`).value = r.description;
+        showMsg(msg, "Draft filled in below — read it and make it yours before continuing.", false);
+      } catch (err) { showMsg(msg, err.message, true); }
+      btn.disabled = false;
+      btn.textContent = "Draft it";
+    });
   }
 
   // ---------- job alerts ----------
@@ -617,6 +655,7 @@
           <div class="field"><label for="c-email">Work email</label><input id="c-email" name="email" type="email" autocomplete="email" required><span class="hint">Receipts, applicant notifications and sign-in links go here.</span></div>`}
           <h2>The role</h2>
           ${roleFields({}, "p")}
+          ${aiDraftBox()}
           ${honeypot}
           <div class="checkout-line"><span>Due today, then monthly</span><strong>${PRICE}.00</strong></div>
           <button class="btn btn-lg" type="submit">Continue to payment</button>
@@ -625,6 +664,10 @@
       </div>`;
 
     bindSignIn(viewPost);
+    bindAiDraft("p", () => ({
+      company: document.getElementById("c-company")?.value,
+      institution_type: document.getElementById("c-type")?.value,
+    }));
 
     document.getElementById("post-form").addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -883,10 +926,12 @@
           <h1 style="font-size:1.5rem">Edit posting</h1>
           <p class="source-note">${esc(j.company)} · ${jobCode(j.id)}. Changes show on the board right away; billing doesn't change.</p>
           ${roleFields(j, "e")}
+          ${aiDraftBox()}
           <div class="cta-row"><button class="btn" type="submit">Save changes</button><a class="btn secondary" href="#dashboard">Cancel</a></div>
           <div class="msg" id="edit-msg" hidden></div>
         </form>
       </div>`;
+    bindAiDraft("e", () => ({ company: j.company, institution_type: j.institution_type }));
     document.getElementById("edit-form").addEventListener("submit", async (e) => {
       e.preventDefault();
       const form = e.currentTarget;
@@ -978,7 +1023,7 @@
               <div class="field"><label for="s-type">Type</label><select id="s-type" name="institution_type">${options(INST, "bank")}</select></div>
             </div>
             <div class="row-2">
-              <div class="field"><label for="s-url">Original posting link</label><input id="s-url" name="source_url" type="url" required placeholder="https://"><span class="hint">Use the bank\'s own careers or ATS page (iCIMS, Workday, Paylocity) when you can. Avoid copying from other job boards; their terms often forbid reuse.</span></div>
+              <div class="field"><label for="s-url">Original posting link</label><input id="s-url" name="source_url" type="url" required placeholder="https://"><span class="hint">Must be the bank\'s own careers or ATS page (iCIMS, Workday, Paylocity, applytojob…). Links on third-party job boards are refused — they go stale, break for candidates, and their terms often forbid reuse.</span></div>
               <div class="field"><label for="s-src">Found on</label><input id="s-src" name="source_name" placeholder="Bank careers site"></div>
             </div>
             ${roleFields({}, "s")}
@@ -1391,11 +1436,47 @@
       slot.innerHTML = `<p class="source-note">Signed in as ${esc(me.name || me.email)}. <a href="#profile">Add a résumé</a> to apply in one click.</p>`;
       return;
     }
+    const canTailor = state.ai && (me.text_ok || me.summary);
     slot.innerHTML = `
       <div class="qa-box">
         <button class="btn" id="qa-btn" type="button">Quick apply as ${esc(me.name || me.email)}</button>
+        ${canTailor ? `<button class="btn secondary" id="qa-tailor" type="button">✨ Tailor my application</button>` : ""}
         <span class="hint">Sends your profile and ${esc(me.resume_name)}. Or use the form below.</span>
       </div>`;
+    const tailorBtn = document.getElementById("qa-tailor");
+    if (tailorBtn) tailorBtn.addEventListener("click", async () => {
+      tailorBtn.disabled = true;
+      tailorBtn.textContent = "Writing from your résumé…";
+      try {
+        const r = await api("/api/ai/apply-assist", { method: "POST", cauth: true, body: JSON.stringify({ job_id: j.id }) });
+        slot.innerHTML = `
+          <div class="qa-box">
+            <label class="hint" for="qa-note"><b>Your tailored note</b> — written only from what's in your résumé. Edit anything before sending.</label>
+            <textarea id="qa-note" rows="8" maxlength="4000">${esc(r.cover_note)}</textarea>
+            ${r.tips.length ? `<div class="ai-tips"><b>Angle your résumé for this one:</b><ul>${r.tips.map((t) => `<li>${esc(t)}</li>`).join("")}</ul></div>` : ""}
+            <button class="btn" id="qa-send" type="button">Send application with this note</button>
+            <span class="hint">Sends your profile, ${esc(me.resume_name)} and the note above.</span>
+          </div>`;
+        document.getElementById("qa-send").addEventListener("click", async (e2) => {
+          e2.target.disabled = true;
+          e2.target.textContent = "Sending…";
+          try {
+            await api("/api/candidate/apply", { method: "POST", cauth: true, body: JSON.stringify({
+              job_id: j.id, cover_note: document.getElementById("qa-note").value }) });
+            document.querySelector(".detail .panel").innerHTML =
+              `<h2>Apply for this role</h2><p class="msg">Application sent to ${esc(j.company)} with your résumé and note. A confirmation is on its way to your inbox.</p>`;
+          } catch (err) {
+            e2.target.disabled = false;
+            e2.target.textContent = "Send application with this note";
+            flash(err.message, true);
+          }
+        });
+      } catch (err) {
+        tailorBtn.disabled = false;
+        tailorBtn.textContent = "✨ Tailor my application";
+        flash(err.message, true);
+      }
+    });
     document.getElementById("qa-btn").addEventListener("click", async (e) => {
       e.target.disabled = true;
       e.target.textContent = "Applying…";

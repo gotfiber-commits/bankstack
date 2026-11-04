@@ -175,6 +175,15 @@ CREATE INDEX IF NOT EXISTS institutions_norm_idx ON institutions (normalized_nam
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS institution_id BIGINT REFERENCES institutions(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS jobs_institution_idx ON jobs (institution_id);
 
+-- AI writing assistant (Nov 2026): per-user daily usage log, for rate limiting.
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id         BIGSERIAL PRIMARY KEY,
+  who        TEXT NOT NULL,     -- employer:<id>, candidate:<id>, or ip:<address>
+  kind       TEXT NOT NULL,     -- posting | apply-assist
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS ai_usage_who_idx ON ai_usage (who, created_at);
+
 -- Saved jobs (Nov 2026): candidates bookmark listings to come back to from their profile.
 CREATE TABLE IF NOT EXISTS saved_jobs (
   id           BIGSERIAL PRIMARY KEY,

@@ -81,6 +81,12 @@ try {
   await emp.fill("#p-desc", "Lead our lakehouse migration.\nJack Henry or Fiserv core experience is a plus.");
   await emp.click(".banking-extra summary");
   await emp.click('.banking-extra .chip-check:has-text("Fiserv DNA")');
+  await emp.click(".ai-box summary");
+  await emp.fill("#ai-notes", "wires and ACH, team of four");
+  await emp.click("#ai-draft");
+  await emp.waitForSelector("#ai-msg:not([hidden])");
+  check("AI drafts the posting into the form", (await emp.inputValue("#p-summary")).startsWith("Run daily deposit operations")
+    && (await emp.inputValue("#p-desc")).includes("What you'll bring"));
   await shot(emp, "03-post-form");
   await emp.click("text=Continue to payment");
   await emp.waitForSelector("#welcome h2:has-text('Your job is live')", { timeout: 15000 });
@@ -206,12 +212,14 @@ try {
   await candP.fill("#pr-summary", "Fifteen years running consumer lending teams at community banks.");
   await candP.locator("#profile-form .chip-check", { hasText: "Lending & credit" }).first().click();
   await candP.locator("#profile-form .chip-check", { hasText: "talent pool" }).click();
+  await candP.setInputFiles("#pr-file", "/tmp/Jordan_Lee_Resume.pdf");
   await candP.click("text=Save profile");
-  await candP.waitForSelector("#flash:not([hidden])");
-  check("profile saves and opens matches", (await candP.textContent("#flash")).includes("Profile saved"));
+  await candP.waitForSelector(".dash-head h1:has-text('Your matches')");
+  const flashText = await candP.textContent("#flash");
+  check("profile saves and opens matches", /saved/i.test(flashText), flashText);
 
   await candP.goto(`${BASE}/jobs/${jobId}`);
-  await candP.waitForSelector("#qa-slot .source-note"); // candidate bits initialized
+  await candP.waitForSelector("#qa-slot .qa-box, #qa-slot .source-note"); // candidate bits initialized
   await candP.click("#save-job");
   await candP.waitForSelector("#save-job:has-text('★ Saved')");
   check("save button on a job page bookmarks it", true);
@@ -242,6 +250,21 @@ try {
   check("invite confirms in place", (await emp.textContent(".talent-card .status-pill")).includes("Invited"));
   check("candidate got the invite email", stack.outbox().some((m) => m.to === "casey@example.test" && m.subject.includes("would like you to apply")));
   await shot(emp, "12-talent-pool");
+
+  // ============================================================
+  section("AI tailors an application");
+  await candP.goto(`${BASE}/jobs/${jobId}`);
+  await candP.waitForSelector("#qa-tailor");
+  await candP.click("#qa-tailor");
+  await candP.waitForSelector("#qa-note");
+  check("tailored note arrives prefilled and editable", (await candP.inputValue("#qa-note")).startsWith("I've spent ten years"));
+  check("résumé angle tips show", (await candP.locator(".ai-tips li").count()) === 3);
+  await shot(candP, "13-ai-tailor");
+  await candP.click("#qa-send");
+  await candP.waitForSelector(".detail .panel .msg");
+  check("application sends with the note", (await candP.textContent(".detail .panel")).includes("Application sent"));
+  const [caseyApp] = await stack.sql`SELECT cover_note FROM applications WHERE email = 'casey@example.test'`;
+  check("the note lands on the employer's copy", !!caseyApp?.cover_note?.startsWith("I've spent ten years"));
 
   // ============================================================
   section("Admin console");

@@ -1,5 +1,5 @@
 // Background jobs, shared by the scheduled functions and the admin console.
-import { db, siteUrl, BRAND } from "./shared.mjs";
+import { db, siteUrl, BRAND, isAggregatorUrl } from "./shared.mjs";
 import { sendEmail, layout, esc } from "./email.mjs";
 
 const money = (n) => "$" + Math.round(n / 1000) + "k";
@@ -59,8 +59,16 @@ export async function runLinkCheck({ limit = 40, timeoutMs = 6000 } = {}) {
     SELECT id, source_url FROM jobs
     WHERE employer_id IS NULL AND status = 'open' AND source_url IS NOT NULL
     ORDER BY last_checked_at NULLS FIRST, id LIMIT ${limit}`;
-  const results = { checked: 0, closed: [], unreachable: 0 };
+  const results = { checked: 0, closed: [], unreachable: 0, aggregator: 0 };
   const check = async (job) => {
+    // Third-party job-board links aren't allowed on the board at all: close on sight.
+    if (isAggregatorUrl(job.source_url)) {
+      await sql`UPDATE jobs SET status = 'closed', last_checked_at = now(), updated_at = now() WHERE id = ${job.id}`;
+      results.checked++;
+      results.aggregator++;
+      results.closed.push(job.id);
+      return;
+    }
     let status = 0, gone = false;
     try {
       const res = await fetch(job.source_url, {

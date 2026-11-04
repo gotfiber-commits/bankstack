@@ -10,7 +10,7 @@ import pg from "pg";
 
 const ADMIN_URL = process.env.TEST_DATABASE_ADMIN_URL || "postgres://postgres@127.0.0.1:5432/postgres";
 const DB_URL = ADMIN_URL.replace(/\/[^/]*$/, "/bankstack_e2e");
-const PORT = 8899, STRIPE_PORT = 12111, REGISTRY_PORT = 8977, BASE = `http://localhost:${PORT}`;
+const PORT = 8899, STRIPE_PORT = 12111, REGISTRY_PORT = 8977, AI_PORT = 8978, BASE = `http://localhost:${PORT}`;
 
 Object.assign(process.env, {
   DATABASE_URL: DB_URL, DB_DRIVER: "pg", URL: BASE,
@@ -18,6 +18,7 @@ Object.assign(process.env, {
   STRIPE_API_HOST: "localhost", STRIPE_API_PORT: String(STRIPE_PORT), STRIPE_API_PROTOCOL: "http",
   ADMIN_TOKEN: "admin_e2e_token", LOCAL_BLOBS_DIR: mkdtempSync(path.join(os.tmpdir(), "bankstack-blobs-")),
   FDIC_API_BASE: `http://localhost:${REGISTRY_PORT}`, NCUA_API_BASE: `http://localhost:${REGISTRY_PORT}`,
+  ANTHROPIC_API_KEY: "sk-ant-test-e2e", ANTHROPIC_API_BASE: `http://localhost:${AI_PORT}`,
 });
 delete process.env.RESEND_API_KEY;
 
@@ -56,8 +57,10 @@ execFileSync(process.execPath, ["scripts/seed.mjs"], { env: process.env, stdio: 
 const { startFakeStripe } = await import("./fake-stripe.mjs");
 const { startLocalServer } = await import("./local-server.mjs");
 const { startFakeRegistries, FAKE_BANKS, FAKE_CUS } = await import("./fake-registries.mjs");
+const { startFakeAnthropic } = await import("./fake-anthropic.mjs");
 const fakeStripe = await startFakeStripe(STRIPE_PORT);
 const registries = await startFakeRegistries(REGISTRY_PORT);
+const fakeAi = await startFakeAnthropic(AI_PORT);
 const { server, routes } = await startLocalServer(PORT);
 const { db } = await import("../netlify/lib/shared.mjs");
 const { runAlertDigest, runLinkCheck } = await import("../netlify/lib/tasks.mjs");
@@ -499,6 +502,53 @@ try {
   check("leaving the pool removes the card", r.data.candidates.length === 0);
 
   // ================================================================
+  section("AI writing assistant");
+  const savedAiKey = process.env.ANTHROPIC_API_KEY;
+  delete process.env.ANTHROPIC_API_KEY;
+  r = await call("GET", "/api/jobs");
+  check("without a key the site says AI is off", r.data.ai === false);
+  r = await call("POST", "/api/ai/posting", { body: { title: "Teller" } });
+  check("…and the assistant declines politely", r.status === 503);
+  process.env.ANTHROPIC_API_KEY = savedAiKey;
+  r = await call("GET", "/api/jobs");
+  check("with a key the site advertises AI", r.data.ai === true);
+
+  r = await call("POST", "/api/ai/posting", { body: {} });
+  check("posting draft needs a title", r.status === 400);
+  r = await call("POST", "/api/ai/posting", { body: {
+    title: "Deposit Operations Specialist", location: "Florence, AL", category: "operations",
+    work_mode: "onsite", salary_min: "48000", salary_max: "60000",
+    company: "Shoals Community Bank", notes: "wires and ACH, team of 4, Jack Henry shop" } });
+  check("posting draft returns a summary and description", r.status === 200
+    && r.data.summary.startsWith("Run daily deposit operations") && r.data.description.includes("What you'll bring"), r.data);
+  let aiReq = fakeAi.requests.at(-1);
+  check("draft prompt carries the employer's facts and the EEO rule",
+    aiReq.headers["x-api-key"] === "sk-ant-test-e2e" && aiReq.headers["anthropic-version"] === "2023-06-01"
+    && aiReq.body.system.includes("equal-opportunity") && aiReq.body.messages[0].content.includes("Deposit Operations Specialist")
+    && aiReq.body.messages[0].content.includes("wires and ACH") && aiReq.body.messages[0].content.includes("$48,000"));
+
+  r = await call("POST", "/api/ai/apply-assist", { body: { job_id: nmlsJobId } });
+  check("apply assist needs a signed-in candidate", r.status === 401);
+  r = await call("POST", "/api/ai/apply-assist", { token: ck, body: { job_id: 999999 } });
+  check("apply assist refuses a closed or unknown job", r.status === 404);
+  r = await call("POST", "/api/ai/apply-assist", { token: ck, body: { job_id: nmlsJobId } });
+  check("apply assist returns a tailored note and tips", r.status === 200
+    && r.data.cover_note.startsWith("I've spent ten years") && r.data.tips.length === 3, r.data);
+  aiReq = fakeAi.requests.at(-1);
+  check("assist prompt carries the résumé, the job, and the no-inventing rule",
+    aiReq.body.system.includes("never invent") && aiReq.body.messages[0].content.includes("consumer lending")
+    && aiReq.body.messages[0].content.includes("Consumer Loan Officer"));
+
+  process.env.AI_DAILY_LIMIT = "2";
+  r = await call("POST", "/api/ai/apply-assist", { token: ck, body: { job_id: nmlsJobId } });
+  check("second use within the limit still works", r.status === 200);
+  r = await call("POST", "/api/ai/apply-assist", { token: ck, body: { job_id: nmlsJobId } });
+  check("the daily limit stops the third use", r.status === 429);
+  delete process.env.AI_DAILY_LIMIT;
+  const [{ n: aiRows }] = await sql`SELECT COUNT(*)::int n FROM ai_usage WHERE who LIKE 'candidate:%'`;
+  check("usage is logged for the budget", aiRows >= 2, aiRows);
+
+  // ================================================================
   section("Admin console and maintenance");
   r = await call("GET", "/api/admin");
   check("admin needs the admin key", r.status === 401);
@@ -515,6 +565,20 @@ try {
   const liveId = r.data.id;
   r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: { ...jobFields, company: "Live Bank", source_url: `${BASE}/index.html` } });
   check("duplicate source link is refused", r.status === 409);
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
+    ...jobFields, title: "Teller II", company: "Agg Bank", source_url: "https://www.tealhq.com/job/teller-ii_abc123" } });
+  check("a third-party job-board link is refused outright", r.status === 400 && /third-party/.test(r.data.error), r.data);
+  const [{ id: aggId }] = await sql`
+    INSERT INTO jobs (title, company, institution_type, location, work_mode, employment_type, category, summary,
+                      apply_url, source_name, source_url, expires_at)
+    VALUES ('Legacy Teller', 'Agg Bank', 'bank', 'Nowhere, AL', 'onsite', 'full-time', 'branch-retail', 'Old aggregator row.',
+            'https://tallo.com/talent/job/legacy-1', 'Tallo', 'https://tallo.com/talent/job/legacy-1', now() + interval '30 days')
+    RETURNING id`;
+  await sql`UPDATE jobs SET last_checked_at = now() WHERE id <> ${aggId}`;
+  r = await runLinkCheck({ limit: 1 });
+  check("the daily check closes aggregator-hosted leftovers without even fetching",
+    r.aggregator === 1 && r.closed.includes(aggId)
+    && (await sql`SELECT status FROM jobs WHERE id = ${aggId}`)[0].status === "closed", r);
   r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
     ...jobFields, title: "Senior Teller", category: "branch-retail", company: "Soft Gone Bank", source_url: `${BASE}/test/gone-posting`, source_name: "Test" } });
   const softId = r.data.id;
@@ -588,6 +652,6 @@ try {
 } finally {
   console.log(results.join("\n"));
   console.log(`\n${passed} passed, ${failed} failed`);
-  server.close(); fakeStripe.server.close(); registries.server.close(); await sql.end?.();
+  server.close(); fakeStripe.server.close(); registries.server.close(); fakeAi.server.close(); await sql.end?.();
   process.exit(failed ? 1 : 0);
 }

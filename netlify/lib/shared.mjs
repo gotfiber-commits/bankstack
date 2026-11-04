@@ -83,6 +83,24 @@ export function normalizeName(s) {
     .replace(/\s+/g, " ").trim();
 }
 
+// Third-party job boards: links there expire, paywall or vanish, so sourced listings must
+// point at the employer's own careers site or ATS. Rejected at entry and swept by the daily check.
+export const AGGREGATOR_DOMAINS = [
+  "tealhq.com", "tallo.com", "themuse.com", "builtin.com", "builtinla.com", "builtinnyc.com",
+  "builtinchicago.org", "indeed.com", "ziprecruiter.com", "glassdoor.com", "linkedin.com",
+  "recruiter.com", "career.com", "mediabistro.com", "jobg8.com", "tietalent.com", "vaia.com",
+  "catalitium.com", "qureos.com", "dejobs.org", "wearedevelopers.com", "hireheroesusa.org",
+  "jobboardly.com", "auditfriendly.co", "salary.com", "simplyhired.com", "lensa.com", "talent.com",
+  "adzuna.com", "monster.com", "careerbuilder.com", "snagajob.com", "jooble.org", "whatjobs.com",
+  "jobrapido.com", "bebee.com", "jobilize.com", "getwork.com",
+];
+export function isAggregatorUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return AGGREGATOR_DOMAINS.some((d) => host === d || host.endsWith("." + d));
+  } catch { return false; }
+}
+
 // Links a posting to its directory page when the employer's name matches an institution.
 // Never blocks the caller: a missing table or empty directory just means no link.
 export async function findInstitutionId(sql, company) {

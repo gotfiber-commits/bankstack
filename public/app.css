@@ -412,6 +412,11 @@ tr.is-new td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .profile-tabs a:hover { color: var(--fg); }
 .profile-tabs a[aria-current="page"] { color: var(--accent); border-bottom-color: var(--accent); }
 .qa-box { display: grid; gap: 0.45rem; padding: 0.9rem; border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); }
+.qa-box textarea { width: 100%; }
+.ai-tips { font-size: 0.85rem; }
+.ai-tips ul { margin: 0.3rem 0 0; padding-left: 1.1rem; }
+.ai-tips li { margin-bottom: 0.25rem; line-height: 1.45; }
+.ai-box summary { color: var(--accent); }
 .applied-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.35rem; font-size: 0.9rem; }
 @media (max-width: 640px) {
   .match-list li.match-row { flex-wrap: wrap; }

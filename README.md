@@ -29,6 +29,11 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 - Monthly recurring revenue, paid postings live, unpaid starts, sourced listings, employers, applications this week, alert subscribers.
 - Take down any listing (a paid one also has its billing cancelled), reopen sourced ones, **add sourced listings** by hand, run the link check on demand.
 
+**AI writing assistant** (optional — appears once `ANTHROPIC_API_KEY` is set)
+- **Employers**: "Let AI draft the summary and description" on the post and edit forms — builds a clean, EEO-safe posting from the fields plus rough notes, filled into the form for them to edit. Better postings, less friction to the $99.
+- **Candidates**: "Tailor my application" on any Direct job — a cover note and résumé-angle tips generated **only from what's actually in their résumé** (the prompt forbids inventing experience), prefilled and editable before one-click sending.
+- Guardrails: per-person daily limit (`AI_DAILY_LIMIT`, default 20) logged in `ai_usage`; the whole feature hides when no key is set; drafts always pass through human hands. Costs run well under a cent per draft on Haiku-class models — set a spend cap in the Anthropic console.
+
 **Institution directory** — `/banks`
 - Every active US bank (FDIC) and credit union (NCUA) gets its own server-rendered page — assets, branches, charter numbers from public data — showing its open jobs on the board, with state pages and a browsable index. ~8,500 indexable pages targeting "jobs at {bank name}" searches, all in the sitemap.
 - Loaded and refreshed from `/#admin` → "Load the institution directory" (pages through the FDIC and NCUA APIs; a few minutes). Postings link to their institution's page automatically by name.
@@ -96,9 +101,9 @@ Both suites run the real function code against a real Postgres database, with a 
 ```bash
 # Postgres on localhost (e.g. docker run -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16)
 export TEST_DATABASE_ADMIN_URL=postgres://postgres@127.0.0.1:5432/postgres
-npm run test:e2e          # 148 checks: posting, payment, renewals, sign-in, applying, résumés, saved jobs, filters, talent pool, directory, privacy, alerts, SEO, admin
+npm run test:e2e          # 163 checks: posting, payment, renewals, sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
 npx playwright install chromium
-npm run test:browser      # 44 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
+npm run test:browser      # 49 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
 ```
 
 ## API
@@ -121,6 +126,8 @@ npm run test:browser      # 44 checks clicking through the real pages, desktop a
 | POST | `/api/candidate/apply` | one-click apply `{ job_id, cover_note? }` |
 | GET | `/api/employer/talent?category=&state=&core_system=&license=` | anonymous talent pool (needs a live posting) |
 | POST | `/api/employer/talent/:id/invite` | `{ job_id, note? }` → invite email to the candidate |
+| POST | `/api/ai/posting` | `{ title, location?, category?, notes?… }` → `{ summary, description }` draft |
+| POST | `/api/ai/apply-assist` | Bearer ck_: `{ job_id }` → `{ cover_note, tips[] }` from their own résumé |
 | POST | `/api/admin/institutions/sync` | `{ source: "fdic"\|"ncua", offset }` → one page of the directory |
 | GET | `/banks`, `/banks/:state`, `/banks/:slug` | server-rendered institution directory |
 | GET | `/api/employer` | Bearer key: postings, applicants |
@@ -140,7 +147,7 @@ npm run test:browser      # 44 checks clicking through the real pages, desktop a
 
 ## About the seed listings
 
-64 real openings across every department (branch, lending, commercial, operations, risk, finance, wealth, technology, data and leadership), gathered October-November 2026 from public job sites, each linking to its source. They expire after 30 days, and the daily link check closes any whose original page disappears. Add fresh ones from `/#admin`.
+62 real openings across every department, rebuilt November 2026 under a strict rule: **every sourced listing links to the institution's own careers site or ATS** — each URL was fetched and showed the job open at the time it was added. Third-party job-board links (Teal, Indeed, ZipRecruiter and the like) are refused by the admin form and auto-closed by the daily check; the daily check also closes any listing whose page 404s or says the job is gone. Listings expire after 30 days. Add fresh ones from `/#admin`.
 
 ## Worth doing next
 
