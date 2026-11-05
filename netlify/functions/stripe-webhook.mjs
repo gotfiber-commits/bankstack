@@ -1,7 +1,7 @@
 // POST /api/stripe-webhook — keeps each job posting in sync with its Stripe subscription.
 // Events to enable in Stripe: checkout.session.completed, customer.subscription.updated,
 // customer.subscription.deleted
-import { db, stripe, json, fail, newToken, siteUrl, syncJobFromSubscription } from "../lib/shared.mjs";
+import { db, stripe, json, fail, siteUrl, syncJobFromSubscription } from "../lib/shared.mjs";
 import { sendEmail, layout, esc } from "../lib/email.mjs";
 
 export default async (req) => {
@@ -24,8 +24,7 @@ export default async (req) => {
       const employerId = obj.metadata?.employer_id || obj.client_reference_id;
       await db()`
         UPDATE employers SET
-          stripe_customer_id = COALESCE(stripe_customer_id, ${obj.customer}),
-          api_token          = COALESCE(api_token, ${newToken()})
+          stripe_customer_id = COALESCE(stripe_customer_id, ${obj.customer})
         WHERE id = ${employerId}`;
       if (obj.subscription && obj.metadata?.job_id) {
         const sub = await stripe().subscriptions.retrieve(obj.subscription);
@@ -38,12 +37,12 @@ export default async (req) => {
           await sendEmail({
             to: row.email,
             subject: `Your posting is live: ${row.title}`,
-            text: `${row.title} is live on BankJobz and renews monthly at $99 until you cancel it.\n\nView it: ${base}/jobs/${row.id}\nDashboard: ${base}/#dashboard\n\nLost your posting key? Use "Email me a sign-in link" on ${base}/#post`,
+            text: `${row.title} is live on BankJobz and renews monthly at $99 until you cancel it.\n\nView it: ${base}/jobs/${row.id}\nDashboard: ${base}/#dashboard\n\nSign in any time with your email and password: ${base}/#dashboard`,
             html: layout({
               heading: "Your posting is live",
               paragraphs: [`<b>${esc(row.title)}</b> is now listed for ${esc(row.company)} as a Direct posting.`,
                 "It renews monthly at $99 until you cancel it from your dashboard. Applications arrive by email and in the dashboard.",
-                `Signing in on another device? Use <i>Email me a sign-in link</i> on the Post a job page.`],
+                `Sign in from any device with your email and password via <i>Employer sign in</i>.`],
               button: { label: "Open your dashboard", url: `${base}/#dashboard` },
             }),
           });

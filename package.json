@@ -17,6 +17,7 @@
     "fflate": "^0.8.2",
     "pdf-parse": "^1.1.1",
     "pg": "^8.13.1",
+    "qrcode": "^1.5.4",
     "stripe": "^18.0.0"
   },
   "devDependencies": {

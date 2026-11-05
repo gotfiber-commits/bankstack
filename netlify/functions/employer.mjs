@@ -1,4 +1,6 @@
-// Employer area. Every request needs "Authorization: Bearer <posting key>".
+// Employer area. Every request needs "Authorization: Bearer <session token>" from a full sign-in.
+// Also: GET/POST /api/employer/security[/…] (password, authenticator app, recovery codes, sessions,
+// trusted devices, notifications), GET /api/employer/applications.csv, POST /applications/:id/notes.
 // GET  /api/employer                          → account, postings (billing + application counts), applications
 // GET  /api/employer/jobs/:id                 → one posting, for the edit form
 // PUT  /api/employer/jobs/:id                 → edit a posting
@@ -15,6 +17,22 @@ import {
 import { CORE_SYSTEMS, LICENSES } from "../lib/banking.mjs";
 import { loadFile } from "../lib/files.mjs";
 import { sendEmail, layout, esc } from "../lib/email.mjs";
+import {
+  hashPassword, verifyPassword, passwordProblem, newTotpSecret, otpauthUrl, verifyTotp, newRecoveryCodes,
+  emailTag, passwordKeys, reserveAttempt, attemptPassed, clearAttempts,
+} from "../lib/auth.mjs";
+import QRCode from "qrcode";
+
+async function notifySecurity(to, what) {
+  await sendEmail({
+    to,
+    subject: `BankJobz security notice: ${what}`,
+    text: `${what} on your BankJobz employer account just now. If this was you, there's nothing to do. If it wasn't, reset your password right away from the sign-in page.`,
+    html: layout({ heading: "Security notice",
+      paragraphs: [`<b>${esc(what)}</b> on your BankJobz employer account just now.`,
+        "If this was you, there's nothing to do. If it wasn't, reset your password right away from the sign-in page."] }),
+  });
+}
 
 // A candidate's block list ("First Metro Bank, Acme CU") hides them from those employers,
 // matching loosely in both directions so "First Metro" still blocks "First Metro Bank".
@@ -29,33 +47,59 @@ function blockedFrom(candidate, employerCompany) {
 
 export default async (req) => {
   const employer = await employerFromRequest(req);
-  if (!employer) return fail("Your sign-in has expired or the key wasn't recognized. Sign in again on the Post a job page.", 401);
+  if (!employer) return fail("You've been signed out. Sign in again to continue.", 401);
   const sql = db();
   const path = new URL(req.url).pathname.replace(/\/+$/, "");
 
   // Overview
   if (req.method === "GET" && path === "/api/employer") {
     const jobs = await sql`
-      SELECT j.id, j.title, j.location, j.status, j.posted_at, j.paid_through, j.cancel_at_period_end,
+      SELECT j.id, j.title, j.location, j.category, j.status, j.posted_at, j.paid_through, j.expires_at,
+             j.cancel_at_period_end, j.views,
              COUNT(a.id)::int AS applications,
-             COUNT(a.id) FILTER (WHERE a.status = 'new')::int AS new_applications
+             COUNT(a.id) FILTER (WHERE a.status = 'new')::int AS new_applications,
+             COUNT(a.id) FILTER (WHERE a.created_at > now() - interval '7 days')::int AS applications_7d
       FROM jobs j LEFT JOIN applications a ON a.job_id = j.id
       WHERE j.employer_id = ${employer.id}
       GROUP BY j.id ORDER BY j.posted_at DESC`;
     const applications = await sql`
       SELECT a.id, a.job_id, j.title AS job_title, a.name, a.email, a.phone, a.linkedin_url, a.resume_url,
-             a.resume_name, a.resume_size, (a.resume_key IS NOT NULL) AS has_resume, a.cover_note, a.status, a.created_at
+             a.resume_name, a.resume_size, (a.resume_key IS NOT NULL) AS has_resume, a.cover_note, a.status,
+             a.notes, a.rating, a.created_at
       FROM applications a JOIN jobs j ON j.id = a.job_id
       WHERE j.employer_id = ${employer.id}
-      ORDER BY a.created_at DESC LIMIT 500`;
+      ORDER BY a.created_at DESC LIMIT 1000`;
+    const open = jobs.filter((j) => j.status === "open");
+    const pipeline = Object.fromEntries(APPLICATION_STATUSES.map((s) => [s, 0]));
+    for (const a of applications) pipeline[a.status] = (pipeline[a.status] || 0) + 1;
+    const dayMs = 86400000;
+    // Postings worth a look: ending soon without renewal, awaiting payment, or a week live with no applicants.
+    const attention = jobs.flatMap((j) => {
+      const age = (Date.now() - new Date(j.posted_at).getTime()) / dayMs;
+      if (j.status === "pending") return [{ job_id: j.id, title: j.title, reason: "unpaid", text: "Not live yet — payment wasn't completed." }];
+      if (j.status !== "open") return [];
+      if (j.cancel_at_period_end) return [{ job_id: j.id, title: j.title, reason: "ending", text: `Set to end ${new Date(j.paid_through).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — keep renewing if you're still hiring.` }];
+      if (age >= 7 && j.applications === 0) return [{ job_id: j.id, title: j.title, reason: "quiet", text: `${Math.floor(age)} days live, no applicants yet — try adding pay, or sharpening the summary.` }];
+      return [];
+    });
     return json({
       company: employer.company, email: employer.email,
       account: {
         company: employer.company, email: employer.email, institution_type: employer.institution_type,
         contact_name: employer.contact_name, contact_title: employer.contact_title, phone: employer.phone,
         member_since: employer.created_at, has_billing: !!employer.stripe_customer_id,
+        mfa_method: employer.mfa_method === "totp" && employer.totp_secret ? "totp" : "email",
       },
-      jobs, applications,
+      stats: {
+        live_postings: open.length,
+        renewing: open.filter((j) => !j.cancel_at_period_end).length,
+        monthly_cents: open.filter((j) => !j.cancel_at_period_end).length * 9900,
+        applicants: applications.length,
+        new_applicants: pipeline.new,
+        applicants_7d: applications.filter((a) => Date.now() - new Date(a.created_at).getTime() < 7 * dayMs).length,
+        views: open.reduce((s, j) => s + j.views, 0),
+      },
+      pipeline, attention, jobs, applications,
     });
   }
 
@@ -73,6 +117,144 @@ export default async (req) => {
                 phone = ${clean(b.phone, 40) || null}, company = ${company}, institution_type = ${type}
               WHERE id = ${employer.id}`;
     return json({ ok: true });
+  }
+
+  // ---------- Account & security ----------
+  if (path === "/api/employer/security" && req.method === "GET") {
+    const sessions = await sql`
+      SELECT id, created_at, last_seen_at, user_agent, ip FROM employer_sessions
+      WHERE employer_id = ${employer.id} AND revoked_at IS NULL AND expires_at > now()
+        AND last_seen_at > now() - interval '14 days'
+      ORDER BY last_seen_at DESC LIMIT 25`;
+    const [{ n: devices }] = await sql`
+      SELECT COUNT(*)::int AS n FROM employer_devices WHERE employer_id = ${employer.id} AND expires_at > now()`;
+    return json({
+      mfa_method: employer.mfa_method === "totp" && employer.totp_secret ? "totp" : "email",
+      recovery_codes_left: (employer.recovery_codes || []).length,
+      password_changed_at: employer.password_changed_at,
+      trusted_devices: devices,
+      notify_each_applicant: employer.notify_each_applicant,
+      sessions: sessions.map((s) => ({ ...s, current: String(s.id) === String(employer.session_id) })),
+    });
+  }
+
+  if (path.startsWith("/api/employer/security/") && req.method === "POST") {
+    let b = {};
+    try { b = await req.json(); } catch { /* some actions take no body */ }
+    const action = path.slice("/api/employer/security/".length);
+    // Sensitive changes need the current password, so a borrowed unlocked laptop or a stolen session
+    // can't take the account over. Guesses here are counted per session and per account, separately
+    // from sign-in, so outsiders guessing at the sign-in page can't stop the owner changing settings.
+    const needPassword = ["password", "totp/start", "totp/disable", "recovery-codes"].includes(action);
+    if (needPassword) {
+      const keys = [[`set:${emailTag(employer.email)}:${employer.session_id}`, 8], [`setall:${emailTag(employer.email)}`, 20]];
+      if (!(await reserveAttempt(sql, keys))) return fail("Too many wrong passwords. Try again in 15 minutes.", 429);
+      if (!verifyPassword(b.current_password, employer.password_hash)) return fail("Your current password isn't right.", 401);
+      await attemptPassed(sql, keys);
+    }
+    const appOn = employer.mfa_method === "totp" && !!employer.totp_secret;
+
+    if (action === "password") {
+      const problem = passwordProblem(b.new_password, employer.email);
+      if (problem) return fail(problem);
+      await sql`UPDATE employers SET password_hash = ${hashPassword(b.new_password)}, password_changed_at = now() WHERE id = ${employer.id}`;
+      // Keep this session; sign out everywhere else, and every device asks for a code again.
+      await sql`UPDATE employer_sessions SET revoked_at = now()
+                WHERE employer_id = ${employer.id} AND id <> ${employer.session_id} AND revoked_at IS NULL`;
+      await sql`DELETE FROM employer_devices WHERE employer_id = ${employer.id}`;
+      await clearAttempts(sql, passwordKeys(emailTag(employer.email), req));
+      await notifySecurity(employer.email, "Your password was changed");
+      return json({ ok: true });
+    }
+
+    if (action === "totp/start") {
+      if (appOn) return fail("An authenticator app is already on. Turn it off first to switch to a new one.", 409);
+      const secret = newTotpSecret();
+      await sql`UPDATE employers SET totp_pending_secret = ${secret} WHERE id = ${employer.id}`;
+      const url = otpauthUrl(secret, employer.email);
+      const qr_svg = await QRCode.toString(url, { type: "svg", margin: 1, width: 200, errorCorrectionLevel: "M" });
+      return json({ secret, otpauth: url, qr_svg });
+    }
+
+    if (action === "totp/confirm") {
+      if (appOn) return fail("An authenticator app is already on. Turn it off first to switch to a new one.", 409);
+      if (!employer.totp_pending_secret) return fail("Start the authenticator setup first.");
+      const step = verifyTotp(employer.totp_pending_secret, b.code, -1);
+      if (step === null) return fail("That code doesn't match. Check your phone's clock and try the newest code.", 400);
+      const { codes, hashes } = newRecoveryCodes();
+      await sql`UPDATE employers SET mfa_method = 'totp', totp_secret = totp_pending_secret, totp_pending_secret = NULL,
+                  totp_last_step = ${step}, recovery_codes = ${hashes} WHERE id = ${employer.id}`;
+      await notifySecurity(employer.email, "An authenticator app was turned on for sign-in");
+      return json({ ok: true, recovery_codes: codes });
+    }
+
+    if (action === "totp/disable") {
+      await sql`UPDATE employers SET mfa_method = 'email', totp_secret = NULL, totp_pending_secret = NULL,
+                  totp_last_step = NULL, recovery_codes = '{}' WHERE id = ${employer.id}`;
+      await sql`DELETE FROM employer_devices WHERE employer_id = ${employer.id}`;
+      await notifySecurity(employer.email, "The authenticator app was turned off; sign-in codes now come by email");
+      return json({ ok: true });
+    }
+
+    if (action === "recovery-codes") {
+      if (employer.mfa_method !== "totp") return fail("Recovery codes come with an authenticator app. Turn that on first.");
+      const { codes, hashes } = newRecoveryCodes();
+      await sql`UPDATE employers SET recovery_codes = ${hashes} WHERE id = ${employer.id}`;
+      return json({ ok: true, recovery_codes: codes });
+    }
+
+    if (action === "sessions/revoke-others") {
+      await sql`UPDATE employer_sessions SET revoked_at = now()
+                WHERE employer_id = ${employer.id} AND id <> ${employer.session_id} AND revoked_at IS NULL`;
+      return json({ ok: true });
+    }
+
+    const revokeMatch = action.match(/^sessions\/(\d+)\/revoke$/);
+    if (revokeMatch) {
+      await sql`UPDATE employer_sessions SET revoked_at = now()
+                WHERE id = ${revokeMatch[1]} AND employer_id = ${employer.id} AND revoked_at IS NULL`;
+      return json({ ok: true, signed_out_here: revokeMatch[1] === String(employer.session_id) });
+    }
+
+    if (action === "devices/forget") {
+      await sql`DELETE FROM employer_devices WHERE employer_id = ${employer.id}`;
+      return json({ ok: true });
+    }
+
+    if (action === "notifications") {
+      await sql`UPDATE employers SET notify_each_applicant = ${b.notify_each_applicant !== false} WHERE id = ${employer.id}`;
+      return json({ ok: true });
+    }
+    return fail("Not found", 404);
+  }
+
+  // ---------- Applicants: export, notes and ratings ----------
+  if (path === "/api/employer/applications.csv" && req.method === "GET") {
+    const p = new URL(req.url).searchParams;
+    const jobId = /^\d+$/.test(p.get("job_id") || "") ? p.get("job_id") : null;
+    const status = APPLICATION_STATUSES.includes(p.get("status")) ? p.get("status") : null;
+    const rows = await sql`
+      SELECT a.created_at, j.title AS job, a.name, a.email, a.phone, a.linkedin_url, a.status, a.rating, a.notes, a.cover_note
+      FROM applications a JOIN jobs j ON j.id = a.job_id
+      WHERE j.employer_id = ${employer.id}
+        AND (${jobId}::bigint IS NULL OR a.job_id = ${jobId}::bigint)
+        AND (${status}::text IS NULL OR a.status = ${status}::text)
+      ORDER BY a.created_at DESC`;
+    const cell = (v) => {
+      let s = v == null ? "" : v instanceof Date ? v.toISOString().slice(0, 10) : String(v);
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // stop spreadsheet formula injection
+      return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = ["Applied", "Job", "Name", "Email", "Phone", "LinkedIn", "Stage", "Rating", "Your notes", "Cover note"];
+    const body = rows.map((r) => [r.created_at, r.job, r.name, r.email, r.phone, r.linkedin_url, r.status, r.rating, r.notes, r.cover_note]
+      .map(cell).join(",")).join("\r\n");
+    return new Response("﻿" + header.join(",") + "\r\n" + body + (body ? "\r\n" : ""), {
+      headers: {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="bankjobz-applicants-${new Date().toISOString().slice(0, 10)}.csv"`,
+        "cache-control": "private, no-store",
+      },
+    });
   }
 
   // Billing portal
@@ -161,7 +343,7 @@ export default async (req) => {
   }
 
   // Applications
-  const appMatch = path.match(/^\/api\/employer\/applications\/(\d+)\/(status|resume)$/);
+  const appMatch = path.match(/^\/api\/employer\/applications\/(\d+)\/(status|resume|notes)$/);
   if (appMatch) {
     const [app] = await sql`
       SELECT a.* FROM applications a JOIN jobs j ON j.id = a.job_id
@@ -174,6 +356,15 @@ export default async (req) => {
       if (!APPLICATION_STATUSES.includes(b.status)) return fail("Pick a valid stage.");
       await sql`UPDATE applications SET status = ${b.status} WHERE id = ${app.id}`;
       return json({ ok: true, status: b.status });
+    }
+    // Private to the employer: never shown to the candidate.
+    if (appMatch[2] === "notes" && req.method === "POST") {
+      let b;
+      try { b = await req.json(); } catch { return fail("Send JSON."); }
+      const rating = b.rating === null || b.rating === "" || b.rating === undefined ? null : Number(b.rating);
+      if (rating !== null && !(Number.isInteger(rating) && rating >= 1 && rating <= 5)) return fail("Rate from 1 to 5 stars.");
+      await sql`UPDATE applications SET notes = ${clean(b.notes, 5000) || null}, rating = ${rating} WHERE id = ${app.id}`;
+      return json({ ok: true });
     }
     if (appMatch[2] === "resume" && req.method === "GET") {
       if (!app.resume_key) return fail("This candidate didn't upload a résumé.", 404);

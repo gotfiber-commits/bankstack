@@ -23,6 +23,7 @@ const check = (name, cond, detail = "") => {
 const section = (t) => lines.push(`\n${t}`);
 
 const stack = await startStack("bankstack_browser");
+const { totpAt, currentStep } = await import("../netlify/lib/auth.mjs");
 const browser = await chromium.launch(process.env.CHROMIUM_PATH ? { executablePath: process.env.CHROMIUM_PATH } : {});
 const pageErrors = [];
 const newPage = async (ctxOpts = {}) => {
@@ -66,27 +67,40 @@ try {
 
   // ============================================================
   section("New hiring manager creates an account");
+  const PW = "Shoals-Teller-Window-42";
+  const codeFor = (to, kind) => stack.outbox().findLast((m) => m.to === to && m.subject.includes(kind))?.subject.match(/(\d{6})$/)?.[1];
   await emp.click("nav >> text=Post a job");
   await emp.waitForSelector("#signup-form");
   check("Post a job asks a new employer to create an account first",
-    (await emp.locator("#post-form").count()) === 0 && (await emp.textContent("#signup-form h2")).includes("Create your employer account"));
+    (await emp.locator("#post-form").count()) === 0 && (await emp.getAttribute("#auth-card", "data-mode")) === "signup");
   await emp.fill("#su-name", "Morgan Hale");
   await emp.fill("#su-title", "HR Manager");
   await emp.fill("#su-company", "Shoals Community Bank");
   await emp.selectOption("#su-type", "bank");
   await emp.fill("#su-email", "hr@shoalsbank.test");
+  await emp.fill("#a-newpw", "short");
+  await emp.click("#signup-form button[type=submit]");
+  await emp.waitForSelector("#auth-msg:not([hidden])");
+  check("a short password is caught before sending", (await emp.textContent("#auth-msg")).includes("10 characters"));
+  await emp.fill("#a-newpw", PW);
+  await emp.click("#signup-form [data-toggle]");
+  check("show-password reveals what was typed", (await emp.getAttribute("#a-newpw", "type")) === "text");
   await shot(emp, "03a-create-account");
-  await emp.click("text=Create account");
-  await emp.waitForSelector("#signup-form h2:has-text('Check your email')");
-  check("sign-up asks them to confirm by email", true);
-  const confirmUrl = stack.outbox().findLast((m) => m.to === "hr@shoalsbank.test" && m.subject.includes("Confirm"))
-    ?.text.match(/https?:\S+login=\w+\S*/)?.[0];
-  check("confirmation email carries the link", !!confirmUrl);
-  await emp.goto(confirmUrl);
+  await emp.click("#signup-form button[type=submit]");
+  await emp.waitForSelector("#code-form");
+  check("sign-up asks for the emailed confirmation code", (await emp.textContent("#code-form h2")).includes("Confirm your email"));
+  await emp.fill("#a-code", "000000");
+  await emp.waitForSelector("#auth-msg:not([hidden])");
+  check("a wrong code is refused on screen", (await emp.textContent("#auth-msg")).includes("isn't right"));
+  await emp.fill("#a-code", codeFor("hr@shoalsbank.test", "confirmation code"));
+  await emp.waitForSelector("#post-form");
+  check("confirming continues straight to what they came for: the post form",
+    (await emp.textContent(".post-intro")).includes("Posting as Shoals Community Bank"));
+  await emp.click("nav >> text=Dashboard");
   await emp.waitForSelector(".first-run");
-  check("the link opens their own empty dashboard with a welcome",
+  check("the code opens their own empty dashboard with a welcome",
     (await emp.textContent(".dash-head")).includes("Shoals Community Bank") && (await emp.textContent(".first-run")).includes("Morgan"));
-  check("account details are on the dashboard", (await emp.inputValue("#ac-name")) === "Morgan Hale" && (await emp.inputValue("#ac-title")) === "HR Manager");
+  check("this browser is remembered as a trusted device", !!(await emp.evaluate(() => localStorage.getItem("bankjobz.device"))));
   await shot(emp, "03b-new-dashboard");
 
   section("Employer posts a job and pays");
@@ -115,43 +129,87 @@ try {
   await emp.waitForSelector("#ai-msg:not([hidden])");
   check("AI drafts the posting into the form", (await emp.inputValue("#p-summary")).startsWith("Run daily deposit operations")
     && (await emp.inputValue("#p-desc")).includes("What you'll bring"));
+  await emp.fill("#p-summary", "Own the enterprise data model across core, lending and call reporting.");
   await shot(emp, "03-post-form");
   await emp.click("text=Continue to payment");
   await emp.waitForSelector("#welcome h2:has-text('Your job is live')", { timeout: 15000 });
-  check("Stripe checkout returns to a 'job is live' page", true);
-  const key = (await emp.textContent("#the-key")).trim();
-  check("account key is tucked away, not pushed", /^bsk_/.test(key) && !(await emp.isVisible("#the-key")));
+  check("Stripe checkout returns to a 'job is live' page with no keys to copy", (await emp.locator("#the-key").count()) === 0);
   await shot(emp, "04-welcome");
   await emp.click("text=Go to dashboard");
-  await emp.waitForSelector(".dash-head h1");
-  check("dashboard shows the paid posting", (await emp.textContent(".dash")).includes("Senior Data Architect") && (await emp.textContent(".status-pill")).startsWith("Renews"));
+  await emp.waitForSelector(".kpis");
+  check("overview shows the live posting", (await emp.textContent(".kpis")).includes("1live posting"));
+  await emp.click("[data-dtab=postings]");
+  await emp.waitForSelector("td:has-text('Senior Data Architect')");
+  check("postings tab shows it renewing", (await emp.textContent(".stack-table .status-pill")).startsWith("Renews"));
   const jobId = (await stack.sql`SELECT id FROM jobs WHERE title = 'Senior Data Architect'`)[0].id;
   await emp.goto(BASE + "/#jobs");
   await emp.waitForSelector("#f-core");
   await emp.selectOption("#f-core", "fiserv-dna");
   check("core-system filter finds the tagged posting", (await emp.locator(".ledger .job-row").count()) === 1);
-  await emp.goto(BASE + "/#dashboard");
-  await emp.waitForSelector(".dash-head h1");
 
   // ============================================================
-  section("Returning employer on a new device finds their posting");
-  const back = await newPage(); // fresh browser: no saved sign-in
+  section("Returning employer on a new device: password, then a code");
+  const back = await newPage(); // fresh browser: no saved sign-in, not a trusted device
   await back.goto(BASE + "/");
   await back.waitForSelector(".home-hero h1");
   check("signed-out visitors see 'Employer sign in' in the top nav", (await back.textContent("#nav-dashboard")) === "Employer sign in");
   await back.click("#nav-dashboard");
-  await back.waitForSelector("#link-form");
-  await back.fill("#l-email", "hr@shoalsbank.test");
-  await back.click("text=Email me a sign-in link");
-  await back.waitForSelector("#link-msg:not([hidden])");
-  const backUrl = stack.outbox().findLast((m) => m.to === "hr@shoalsbank.test" && m.subject.includes("sign-in"))
-    ?.text.match(/https?:\S+login=\w+\S*/)?.[0];
-  check("a sign-in link is emailed", !!backUrl);
-  await back.goto(backUrl);
-  await back.waitForSelector(".dash-head h1");
-  check("the link lands on their dashboard with the paid posting",
-    (await back.textContent(".dash")).includes("Senior Data Architect") && (await back.textContent("#nav-dashboard")) === "Dashboard");
-  await shot(back, "04b-returning-employer");
+  await back.waitForSelector("#signin-form");
+  await back.fill("#a-email", "hr@shoalsbank.test");
+  await back.fill("#a-password", "Wrong-Password-1");
+  await back.click("#signin-form button[type=submit]");
+  await back.waitForSelector("#auth-msg:not([hidden])");
+  check("a wrong password is refused", (await back.textContent("#auth-msg")).includes("don't match"));
+  await back.fill("#a-password", PW);
+  await back.click("#signin-form button[type=submit]");
+  await back.waitForSelector("#code-form");
+  check("a new device is asked for an emailed code", (await back.textContent("#code-form")).includes("We emailed a 6-digit code"));
+  await shot(back, "04b-sign-in-code");
+  await back.uncheck("#a-remember");
+  await back.fill("#a-code", codeFor("hr@shoalsbank.test", "sign-in code"));
+  await back.waitForSelector(".kpis");
+  check("password + code lands on their dashboard", (await back.textContent(".dash-head")).includes("Shoals Community Bank")
+    && (await back.textContent("#nav-dashboard")) === "Dashboard");
+  check("…without trusting this device, as asked", !(await back.evaluate(() => localStorage.getItem("bankjobz.device"))));
+
+  // The button in the email works too: sign in on one device, finish from the email on another.
+  const linkFor = (to, kind) => stack.outbox().findLast((m) => m.to === to && m.subject.includes(kind))?.text.match(/https?:\S+#auth=bsl_[0-9a-f]{48}/)?.[0];
+  const viaLink = await newPage();
+  await viaLink.goto(BASE + "/#dashboard");
+  await viaLink.waitForSelector("#signin-form");
+  await viaLink.fill("#a-email", "hr@shoalsbank.test");
+  await viaLink.fill("#a-password", PW);
+  await viaLink.click("#signin-form button[type=submit]");
+  await viaLink.waitForSelector("#code-form");
+  check("the code step mentions the email's button", (await viaLink.textContent("#code-form")).includes("button in that email"));
+  const signInUrl = linkFor("hr@shoalsbank.test", "sign-in code");
+  check("the sign-in email has a one-click button", !!signInUrl, signInUrl);
+  const mailApp = await newPage();
+  await mailApp.goto(signInUrl.replace(/^https?:\/\/[^/]+/, BASE));
+  await mailApp.waitForSelector("#link-form");
+  check("opening the button asks for one click (mail scanners can't use it up)", (await mailApp.textContent("#link-form")).includes("Finish signing in")
+    && !(await mailApp.evaluate(() => location.search)));
+  check("…and the secret is gone from the address bar", !(await mailApp.evaluate(() => location.href)).includes("bsl_"));
+  await shot(mailApp, "04c-email-button");
+  await mailApp.click("#link-form button[type=submit]");
+  await mailApp.waitForSelector(".kpis");
+  check("one click signs in from the email", (await mailApp.textContent(".dash-head")).includes("Shoals Community Bank"));
+  await mailApp.goto(signInUrl.replace(/^https?:\/\/[^/]+/, BASE));
+  await mailApp.waitForSelector("#link-card .msg.error");
+  check("the same button can't be used twice, and says so straight away", (await mailApp.textContent("#link-card")).includes("already used"));
+  // The reset email's button opens a new-password form.
+  await viaLink.click("#a-back");
+  await viaLink.waitForSelector("#signin-form");
+  await viaLink.click("#a-forgot");
+  await viaLink.fill("#f-email", "hr@shoalsbank.test");
+  await viaLink.click("#forgot-form button[type=submit]");
+  await viaLink.waitForSelector("#reset-form");
+  const resetUrl = linkFor("hr@shoalsbank.test", "Reset");
+  await mailApp.goto(resetUrl.replace(/^https?:\/\/[^/]+/, BASE));
+  await mailApp.waitForSelector("#link-form #a-linkpw");
+  check("the reset button opens a set-new-password form", (await mailApp.textContent("#link-form h2")) === "Set a new password");
+  check("…naming the account it's for", (await mailApp.textContent("#link-form")).includes("hr@shoalsbank.test"));
+  await shot(mailApp, "04d-reset-button");
 
   // ============================================================
   section("Candidate finds the job and applies");
@@ -185,52 +243,113 @@ try {
 
   // ============================================================
   section("Employer reviews the applicant");
-  await emp.reload();
-  await emp.waitForSelector("select.stage");
-  check("applicant appears, flagged new", (await emp.textContent("tr.is-new")).includes("Jordan Lee"));
-  const [download] = await Promise.all([emp.waitForEvent("download"), emp.click("text=Jordan_Lee_Resume.pdf")]);
-  const saved = await download.path();
-  check("résumé downloads intact", readFileSync(saved).equals(pdf) && download.suggestedFilename() === "Jordan_Lee_Resume.pdf");
-  await emp.selectOption("select.stage", "interview");
-  await emp.waitForSelector("#act-msg:has-text('Moved to Interview')");
-  check("stage changed to Interview", (await stack.sql`SELECT status FROM applications`)[0].status === "interview");
+  await emp.goto(BASE + "/#dashboard");
+  await emp.click("[data-dtab=overview]");
+  await emp.waitForSelector(".recent-apps");
+  check("overview flags the new applicant", (await emp.textContent(".kpis")).includes("1 new") && (await emp.textContent(".recent-apps")).includes("Jordan Lee"));
+  await emp.click(".pipe-step[data-goto-stage=new]");
+  await emp.waitForSelector(".app-card");
+  check("the pipeline jumps to that stage's applicants", (await emp.inputValue("#ap-stage")) === "new"
+    && (await emp.locator(".app-card.is-new").count()) === 1 && (await emp.textContent(".app-card")).includes("Jordan Lee"));
+  const [download] = await Promise.all([emp.waitForEvent("download"), emp.click(".app-card [data-resume]")]);
+  check("résumé downloads intact", readFileSync(await download.path()).equals(pdf) && download.suggestedFilename() === "Jordan_Lee_Resume.pdf");
+  await emp.click(".app-card [data-rate='4']");
+  await emp.waitForSelector("#act-msg:has-text('Rated Jordan Lee 4/5')");
+  check("a 4-star rating saves", (await stack.sql`SELECT rating FROM applications WHERE name = 'Jordan Lee'`)[0].rating === 4
+    && (await emp.locator(".app-card .stars button.on").count()) === 4);
+  await emp.click(".app-card summary:has-text('Your private notes')");
+  await emp.fill(".app-card [data-notes]", "Strong on SilverLake. Schedule a panel.");
+  await emp.click(".app-card [data-save-notes]");
+  await emp.waitForSelector("#act-msg:has-text('Notes saved')");
+  check("private notes save", (await stack.sql`SELECT notes FROM applications WHERE name = 'Jordan Lee'`)[0].notes.startsWith("Strong on SilverLake"));
+  await emp.selectOption(".app-card select.stage", "interview");
+  await emp.waitForSelector("#act-msg:has-text('moved to Interview')");
+  check("stage changed to Interview", (await stack.sql`SELECT status FROM applications WHERE name = 'Jordan Lee'`)[0].status === "interview");
+  await emp.selectOption("#ap-stage", "");
+  await emp.fill("#ap-q", "nobody-matches");
+  check("search filters the list", (await emp.locator(".app-card").count()) === 0);
+  await emp.fill("#ap-q", "jordan");
+  check("…and finds by name", (await emp.locator(".app-card").count()) === 1);
+  const [csvDl] = await Promise.all([emp.waitForEvent("download"), emp.click("#ap-export")]);
+  const csvText = readFileSync(await csvDl.path(), "utf8");
+  check("Export CSV downloads the applicants with notes and rating", csvText.includes("Jordan Lee") && csvText.includes("interview,4,Strong on SilverLake"));
   await shot(emp, "06-dashboard");
 
+  await emp.click("[data-dtab=postings]");
   await emp.click("td.acts >> text=Edit");
   await emp.waitForSelector("#edit-form");
   check("edit form is prefilled", (await emp.inputValue("#e-title")) === "Senior Data Architect" && (await emp.inputValue("#e-min")) === "115000");
   await emp.fill("#e-title", "Lead Data Architect");
   await emp.click("text=Save changes");
   await emp.waitForSelector("#flash:not([hidden])");
-  await emp.waitForSelector(".dash td a:has-text('Lead Data Architect')");
-  check("edit saves with a confirmation", (await emp.textContent("#flash")).includes("Posting updated"));
+  await emp.waitForSelector("td:has-text('Lead Data Architect')");
+  check("edit saves and returns to Postings", (await emp.textContent("#flash")).includes("Posting updated"));
+  check("postings show views and apply rate", /\d+%/.test(await emp.textContent("td[data-label='Apply rate']")));
 
-  await emp.click("text=Cancel posting");
+  await emp.click("td.acts >> text=Cancel");
+  check("cancel asks for a second click instead of a pop-up", (await emp.textContent("td.acts")).includes("Click again to confirm"));
+  await emp.click("td.acts >> text=Click again to confirm");
   await emp.waitForSelector(".status-pill:has-text('Ends')");
   check("cancel posting: shows when it ends, offers Keep renewing", (await emp.locator("text=Keep renewing").count()) === 1);
   await emp.click("text=Keep renewing");
   await emp.waitForSelector(".status-pill:has-text('Renews')");
   check("keep renewing restores it", true);
+  await emp.click("td.acts >> text=Duplicate");
+  await emp.waitForSelector("#post-form");
+  check("Duplicate opens a new posting prefilled from the old one", (await emp.inputValue("#p-title")) === "Lead Data Architect"
+    && (await emp.inputValue("#p-location")) === "Florence, AL");
+  await emp.goto(BASE + "/#dashboard");
+  await emp.waitForSelector(".dash-head");
   await emp.click("text=Cards & invoices");
   await emp.waitForSelector("text=Stripe billing portal");
   check("Cards & invoices opens Stripe's billing portal", true);
 
   // ============================================================
-  section("Signing in on another device");
+  section("Account & security: authenticator app");
+  await emp.goto(BASE + "/#dashboard");
+  await emp.waitForSelector("[data-dtab=account]");
+  await emp.click("[data-dtab=account]");
+  await emp.waitForSelector("#sec-totp-on");
+  check("security shows email codes as the current second step", (await emp.textContent("#security-box")).includes("Email code"));
+  await emp.click("#sec-totp-on");
+  await emp.waitForSelector("#a-confirmpw");
+  check("setting up the app asks for the current password first", true);
+  await emp.fill("#a-confirmpw", PW);
+  await emp.click(".inline-confirm button[type=submit]");
+  await emp.waitForSelector(".totp-setup .qr svg");
+  const secret = (await emp.textContent(".totp-setup .secret")).replace(/\s/g, "");
+  check("setup shows a scannable QR code and the key", /^[A-Z2-7]{32}$/.test(secret));
+  await emp.fill("#totp-code", totpAt(secret, currentStep()));
+  await emp.click("#totp-confirm button[type=submit]");
+  await emp.waitForSelector(".codes-box");
+  check("turning it on shows 10 one-time recovery codes", (await emp.locator(".codes li").count()) === 10);
+  await shot(emp, "06b-recovery-codes");
+  await emp.click("#codes-done");
+  await emp.waitForSelector("#security-box .status-pill:has-text('Authenticator app')");
+  await emp.waitForSelector("#security-box:has-text('10 recovery codes left')", { timeout: 5000 }).catch(() => {});
+  check("security now shows the authenticator app", (await emp.textContent("#security-box")).includes("10 recovery codes left"), (await emp.textContent("#security-box")).slice(0, 300));
+  await shot(emp, "06c-security");
+
+  // ============================================================
+  section("Signing in on a phone with the authenticator app");
   const other = await newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
   await other.goto(BASE + "/#dashboard");
-  await other.waitForSelector("#link-form");
+  await other.waitForSelector("#signin-form");
   check("signed-out dashboard asks to sign in", true);
-  await other.fill("#l-email", "hr@shoalsbank.test");
-  await other.click("text=Email me a sign-in link");
-  await other.waitForSelector("#link-msg:not([hidden])");
-  const loginUrl = stack.outbox().findLast((m) => m.subject.includes("sign-in link"))?.text.match(/https?:\S+/)?.[0];
-  await other.goto(loginUrl);
-  await other.waitForSelector("#flash:not([hidden])");
-  check("email link signs them in on a phone", (await other.textContent("#flash")).includes("Signed in as Shoals Community Bank"));
-  await other.waitForSelector("select.stage");
+  await other.fill("#a-email", "hr@shoalsbank.test");
+  await other.fill("#a-password", PW);
+  await other.click("#signin-form button[type=submit]");
+  await other.waitForSelector("#code-form");
+  check("with the app on, the phone asks for the app's code", (await other.textContent("#code-form")).includes("authenticator app"));
+  await shot(other, "07a-app-code-phone");
+  await other.fill("#a-code", totpAt(secret, currentStep() + 1));
+  await other.click("#code-form button[type=submit]");
+  await other.waitForSelector(".kpis");
+  check("app code signs in on the phone", (await other.textContent(".dash-head")).includes("Shoals Community Bank"));
+  await other.click("[data-dtab=applicants]");
+  await other.waitForSelector(".app-card");
   await shot(other, "07-dashboard-phone");
-  const overflow = await other.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth, ...[...document.querySelectorAll("main *")].map((e) => e.getBoundingClientRect().right)) > window.innerWidth + 1);
+  const overflow = await other.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth, ...[...document.querySelectorAll("main *:not(.dash-tabs *)")].map((e) => e.getBoundingClientRect().right)) > window.innerWidth + 1);
   check("no sideways scrolling at phone width", !overflow);
   await other.goto(BASE + "/");
   await other.waitForSelector(".home-hero h1");
@@ -286,6 +405,8 @@ try {
   // ============================================================
   section("Talent pool from the employer's chair");
   await emp.goto(BASE + "/#dashboard");
+  await emp.waitForSelector("[data-dtab=talent]");
+  await emp.click("[data-dtab=talent]");
   await emp.waitForSelector("#t-load");
   await emp.click("#t-load");
   await emp.waitForSelector(".talent-card");

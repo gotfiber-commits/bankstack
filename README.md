@@ -18,13 +18,13 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 - **Weekly job alerts** by specialty, with email confirmation and one-click unsubscribe.
 
 **Employers**
-- **Employer accounts**: hiring managers create a free account first (name, title, institution, work email), confirm by emailed link, and land on their own dashboard. Posting requires a signed-in account; the institution comes from the account, so the post form is just the role. "Employer sign in" is always in the top nav — returning managers on any device get an emailed sign-in link straight back to their postings. Each email address is its own account with its own dashboard.
+- **Employer accounts with MFA**: hiring managers create a free account (name, title, institution, work email, password) and confirm their email with a 6-digit code. Every sign-in on a new device is **password + a second factor** — a 6-digit code by email, or from an authenticator app (Microsoft/Google Authenticator, 1Password) with 10 single-use recovery codes. "Trust this device for 30 days" skips the code on their own computer. Built-in protections: scrypt-hashed passwords, limits counted before every check (8 tries per network; email-wide ceilings of 40 passwords and 10 codes; 15-minute pause), with the owner emailed when a pause starts. Trusted devices and the one-click button in every code email keep working through a pause, so nobody can lock the owner out. Codes are limited to 5 tries and 10 minutes, hashed revocable sessions (30-day max, 14-day idle), security-notice emails on password/MFA changes, and forms that never reveal whether an email has an account. "Employer sign in" is always in the top nav.
+- **Hiring dashboard** with tabs: **Overview** (live postings, applicants, last-7-days, job page views, monthly spend, a clickable hiring pipeline, recent applicants, and postings that need attention — unpaid, ending, or a week with no applicants); **Postings** (views, applicants, apply rate, edit, duplicate, cancel/keep renewing); **Applicants** (search, filter by posting and stage, sort by rating, 1–5 star ratings, private notes, résumé download, CSV export); **Talent pool**; **Account & security** (details, authenticator app setup by QR code, recovery codes, change password, every signed-in device with sign-out, forget trusted devices, applicant-email on/off).
 - **Post a job**: fill in the role, pay $99 through Stripe Checkout, and it goes live as a Direct listing above sourced jobs. Optional banking specifics — the core system the role touches and licenses required — make the posting filterable and boost its match rank for the right candidates.
 - **Talent pool** in the dashboard: browse opted-in candidates anonymously, filter by department, state, core system or license, and invite one to a posting with a note. Included with any live posting.
 - Each posting is its own monthly subscription. **Cancel posting** stops renewal (it stays up through the paid month); **Keep renewing** undoes it.
 - Email when a posting goes live and for **every new applicant** (reply goes straight to the candidate).
 - **Dashboard**: postings with billing status, applicant counts, **edit posting**, applicants with **résumé download**, **stages** (New, Reviewing, Interview, Offer, Hired, Not a fit), filter by posting, and **Cards & invoices** (Stripe's billing portal).
-- Sign in on any device with **Email me a sign-in link** (single use, 30 minutes) or the posting key.
 
 **You (site owner)** — `/#admin`
 - Monthly recurring revenue, paid postings live, unpaid starts, sourced listings, employers, applications this week, alert subscribers.
@@ -59,7 +59,7 @@ netlify/lib/             shared (db, Stripe, validation), banking (core systems,
                          institutions (FDIC/NCUA sync), match, email, files (résumés), extract, tasks
 db/schema.sql            every table; safe to re-run — it upgrades older databases in place
 scripts/seed.mjs         creates the schema and loads the seed jobs
-tests/                   e2e.mjs (176 API checks), browser.mjs (59 checks in real Chromium),
+tests/                   e2e.mjs (299 API checks), browser.mjs (87 checks in real Chromium),
                          fake Stripe, fake FDIC/NCUA, local server
 ```
 
@@ -102,9 +102,9 @@ Both suites run the real function code against a real Postgres database, with a 
 ```bash
 # Postgres on localhost (e.g. docker run -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16)
 export TEST_DATABASE_ADMIN_URL=postgres://postgres@127.0.0.1:5432/postgres
-npm run test:e2e          # 176 checks: posting, payment, renewals, sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
+npm run test:e2e          # 299 checks: posting, payment, renewals, sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
 npx playwright install chromium
-npm run test:browser      # 59 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
+npm run test:browser      # 87 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
 ```
 
 ## API
@@ -118,8 +118,13 @@ npm run test:browser      # 59 checks clicking through the real pages, desktop a
 | POST | `/api/checkout` | job fields (+ `company, email, institution_type` when not signed in) → `{ url }` |
 | GET | `/api/session?session_id=` | after Stripe → `{ company, token, job }` |
 | POST | `/api/stripe-webhook` | Stripe only |
-| POST | `/api/auth/signup` | `{ contact_name, contact_title?, company, institution_type, email }` → confirmation email |
-| POST | `/api/auth/request`, `/api/auth/verify` | emailed sign-in link; verify confirms the account on first use |
+| POST | `/api/auth/signup` | `{ contact_name, contact_title?, company, institution_type, email, password }` → `{ challenge }`, code emailed |
+| POST | `/api/auth/login` | `{ email, password, device_token? }` → `{ token }` on a trusted device, else `{ challenge, method }` |
+| POST | `/api/auth/verify` | `{ challenge, code, remember_device? }` → `{ token, device_token? }` (finishes sign-up or sign-in) |
+| POST | `/api/auth/resend`, `/forgot`, `/reset`, `/logout` | new code · reset code by email · set new password · end session |
+| GET/POST | `/api/employer/security[/…]` | password, authenticator app, recovery codes, sessions, trusted devices, notifications |
+| GET | `/api/employer/applications.csv?job_id=&status=` | applicant export |
+| POST | `/api/employer/applications/:id/notes` | `{ notes, rating }` private to the employer |
 | PUT | `/api/employer/account` | edit name, title, phone, institution |
 | POST | `/api/candidate-auth/request`, `/verify` | candidate sign-in links |
 | GET/PUT | `/api/candidate` | Bearer ck_ token: profile + their applications |

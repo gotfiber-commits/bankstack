@@ -1,7 +1,8 @@
 // GET /api/session?session_id=cs_...
-// Called by the welcome page after Stripe Checkout. Confirms payment with Stripe, puts the job live
-// and returns the employer's posting key. Works even if the webhook hasn't arrived yet.
-import { db, stripe, json, fail, newToken, syncJobFromSubscription } from "../lib/shared.mjs";
+// Called by the welcome page after Stripe Checkout. Confirms payment with Stripe and puts the job
+// live, even if the webhook hasn't arrived yet. The employer is already signed in (posting requires
+// it), so no credentials are handed out here.
+import { db, stripe, json, fail, syncJobFromSubscription } from "../lib/shared.mjs";
 
 export default async (req) => {
   if (req.method !== "GET") return fail("Method not allowed", 405);
@@ -22,16 +23,15 @@ export default async (req) => {
 
   const [employer] = await sql`
     UPDATE employers SET
-      stripe_customer_id = COALESCE(stripe_customer_id, ${session.customer}),
-      api_token          = COALESCE(api_token, ${newToken()})
+      stripe_customer_id = COALESCE(stripe_customer_id, ${session.customer})
     WHERE id = ${employerId}
-    RETURNING company, email, api_token`;
+    RETURNING company, email`;
   if (!employer) return fail("We couldn't match this payment to an employer account.", 404);
 
   if (session.subscription && jobId) await syncJobFromSubscription(session.subscription, jobId);
   const [job] = jobId ? await sql`SELECT id, title, status FROM jobs WHERE id = ${jobId}` : [];
 
-  return json({ company: employer.company, email: employer.email, token: employer.api_token, job: job || null });
+  return json({ company: employer.company, email: employer.email, job: job || null });
 };
 
 export const config = { path: "/api/session" };

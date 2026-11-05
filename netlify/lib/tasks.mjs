@@ -104,4 +104,15 @@ export async function closeExpired() {
   return rows.length;
 }
 
+// Sign-in housekeeping: drop used/expired codes, dead sessions and lapsed trusted devices.
+export async function pruneAuth() {
+  const sql = db();
+  const challenges = await sql`DELETE FROM auth_challenges WHERE expires_at < now() - interval '1 day' RETURNING id`;
+  const sessions = await sql`DELETE FROM employer_sessions
+    WHERE expires_at < now() OR revoked_at < now() - interval '30 days' OR last_seen_at < now() - interval '30 days' RETURNING id`;
+  const devices = await sql`DELETE FROM employer_devices WHERE expires_at < now() RETURNING id`;
+  const usage = await sql`DELETE FROM ai_usage WHERE created_at < now() - interval '30 days' RETURNING id`;
+  return { challenges: challenges.length, sessions: sessions.length, devices: devices.length, ai_usage: usage.length };
+}
+
 export { siteUrl };

@@ -30,7 +30,7 @@ export default async (req) => {
         COUNT(*) FILTER (WHERE employer_id IS NULL AND status = 'open' AND expires_at > now())::int   AS sourced_live
       FROM jobs`;
     const [counts] = await sql`
-      SELECT (SELECT COUNT(*)::int FROM employers WHERE api_token IS NOT NULL)            AS employer_count,
+      SELECT (SELECT COUNT(*)::int FROM employers WHERE verified_at IS NOT NULL)            AS employer_count,
              (SELECT COUNT(*)::int FROM applications)                                     AS applications,
              (SELECT COUNT(*)::int FROM applications WHERE created_at > now() - interval '7 days') AS applications_7d,
              (SELECT COUNT(*)::int FROM alert_subscriptions WHERE confirmed)              AS alert_subscribers`;
@@ -43,7 +43,7 @@ export default async (req) => {
       SELECT e.id, e.company, e.email, e.created_at,
              COUNT(j.id) FILTER (WHERE j.status = 'open')::int AS live_postings
       FROM employers e LEFT JOIN jobs j ON j.employer_id = e.id
-      WHERE e.api_token IS NOT NULL GROUP BY e.id ORDER BY e.created_at DESC`;
+      WHERE e.verified_at IS NOT NULL GROUP BY e.id ORDER BY e.created_at DESC`;
     let directory = { banks: 0, credit_unions: 0 };
     try {
       [directory] = await sql`

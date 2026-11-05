@@ -506,6 +506,13 @@
         <p>It may have been filled or taken down by the employer.</p><a class="btn" href="#jobs">See current positions</a></div>`;
       return;
     }
+    // Count one view per job per browser session (the employer sees views in their dashboard).
+    if (!state.demo) {
+      const seenKey = `bankjobz.viewed.${j.id}`;
+      let seen = false;
+      try { seen = !!sessionStorage.getItem(seenKey); sessionStorage.setItem(seenKey, "1"); } catch { /* storage blocked: still count */ }
+      if (!seen) fetch(`/api/jobs/${j.id}`, { keepalive: true }).catch(() => {});
+    }
     const pay = salary(j);
     const external = !j.direct;
     const ownAts = j.direct && j.apply_url;
@@ -594,93 +601,231 @@
   }
 
   // ---------- employer accounts ----------
-  function signInPanel() {
-    return `
-      <div class="panel signin">
-        <h2>Already have an account?</h2>
-        <form class="form" id="link-form" novalidate>
-          <div class="field"><label for="l-email">Work email</label><input id="l-email" name="email" type="email" autocomplete="email" placeholder="you@yourbank.com"></div>
-          <button class="btn secondary" type="submit">Email me a sign-in link</button>
-          <div class="msg" id="link-msg" hidden></div>
-        </form>
-        <details><summary>Use an account key instead</summary>
-          <form class="form" id="key-form" novalidate style="margin-top:0.75rem">
-            <div class="field"><label for="k-key">Account key</label><input id="k-key" name="key" placeholder="bsk_…" autocomplete="off"></div>
-            <button class="btn secondary" type="submit">Sign in</button>
-            <div class="msg" id="key-msg" hidden></div>
-          </form>
-        </details>
-      </div>`;
+  // ---------- employer sign-in: password + second factor ----------
+  // One card handles every step: sign in → code, create account → code, forgot → code + new password.
+  const deviceKey = () => store.get("bankjobz.device");
+
+  function authCard(mode = "signin") {
+    return `<section class="panel auth-card" id="auth-card" data-mode="${mode}">
+      <div class="auth-tabs" role="tablist">
+        <button type="button" role="tab" data-auth-tab="signin" aria-selected="${mode === "signin"}">Sign in</button>
+        <button type="button" role="tab" data-auth-tab="signup" aria-selected="${mode === "signup"}">Create account</button>
+      </div>
+      <div id="auth-body"></div>
+    </section>`;
   }
 
-  function signUpPanel() {
-    return `
-      <form class="panel form" id="signup-form" novalidate>
-        <h2>Create your employer account</h2>
-        <p class="source-note">Free to create. You get your own dashboard to post jobs, review applicants and manage billing. Each posting is ${PRICE}/month, only when you post.</p>
-        <div class="row-2">
-          <div class="field"><label for="su-name">Your name</label><input id="su-name" name="contact_name" autocomplete="name" required></div>
-          <div class="field"><label for="su-title">Your title (optional)</label><input id="su-title" name="contact_title" autocomplete="organization-title" placeholder="HR Manager"></div>
-        </div>
-        <div class="row-2">
-          <div class="field"><label for="su-company">Institution name</label><input id="su-company" name="company" autocomplete="organization" required></div>
-          <div class="field"><label for="su-type">Type</label><select id="su-type" name="institution_type">${options(INST, "bank")}</select></div>
-        </div>
-        <div class="field"><label for="su-email">Work email</label><input id="su-email" name="email" type="email" autocomplete="email" required>
-          <span class="hint">We'll send a link to confirm it. Applicant notifications and receipts go here too.</span></div>
-        ${honeypot}
-        <button class="btn btn-lg" type="submit">Create account</button>
-        <div class="msg" id="signup-msg" hidden></div>
-      </form>`;
-  }
+  const pwField = (id, label, autocomplete, hint = "") => `
+    <div class="field"><label for="${id}">${label}</label>
+      <div class="pw-wrap"><input id="${id}" name="${id.replace(/^a-/, "")}" type="password" autocomplete="${autocomplete}" required minlength="${autocomplete === "new-password" ? 10 : 1}">
+        <button type="button" class="linkish pw-toggle" data-toggle="${id}" aria-label="Show password">Show</button></div>
+      ${hint ? `<span class="hint">${hint}</span>` : ""}</div>`;
 
-  function bindSignUp() {
-    const form = document.getElementById("signup-form");
-    if (!form) return;
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const msg = document.getElementById("signup-msg");
-      const data = Object.fromEntries(new FormData(form));
-      if (!data.contact_name.trim()) return showMsg(msg, "Enter your name.", true);
-      if (!data.company.trim()) return showMsg(msg, "Enter your institution's name.", true);
-      if (!/^\S+@\S+\.\S+$/.test(data.email)) return showMsg(msg, "Enter a valid work email.", true);
-      if (state.demo) return showMsg(msg, "Preview mode: on the live site this creates your account and emails a confirmation link.", false);
-      const btn = form.querySelector("button[type=submit]");
-      btn.disabled = true;
-      try {
-        await api("/api/auth/signup", { method: "POST", body: JSON.stringify(data) });
-        form.innerHTML = `<h2>Check your email</h2>
-          <p>We sent a confirmation link to <b>${esc(data.email.trim())}</b>. Click it to open your dashboard and post your first job. It works for 30 minutes.</p>
-          <p class="source-note">Nothing there? Check spam, or use "Email me a sign-in link" to get a fresh one.</p>`;
-      } catch (err) {
-        showMsg(msg, err.message, true);
-        btn.disabled = false;
-      }
-    });
-  }
+  function bindAuth(after) {
+    const card = document.getElementById("auth-card");
+    if (!card) return;
+    const body = document.getElementById("auth-body");
+    const msgBox = () => document.getElementById("auth-msg");
+    const busy = (form, on) => form.querySelectorAll("button, input").forEach((el) => (el.disabled = on));
 
-  function bindSignIn(after) {
-    const linkForm = document.getElementById("link-form");
-    if (linkForm) linkForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const msg = document.getElementById("link-msg");
-      const email = document.getElementById("l-email").value.trim();
-      if (!/^\S+@\S+\.\S+$/.test(email)) return showMsg(msg, "Enter your work email.", true);
-      if (state.demo) return showMsg(msg, "Preview mode: on the live site this emails you a sign-in link.", false);
-      try {
-        await api("/api/auth/request", { method: "POST", body: JSON.stringify({ email }) });
-        showMsg(msg, `If ${email} has an account, a sign-in link is on its way. It works for 30 minutes.`, false);
-      } catch (err) { showMsg(msg, err.message, true); }
-    });
-    const keyForm = document.getElementById("key-form");
-    if (keyForm) keyForm.addEventListener("submit", (e) => {
-      e.preventDefault();
-      const v = document.getElementById("k-key").value.trim();
-      if (!v.startsWith("bsk_")) return showMsg(document.getElementById("key-msg"), "Account keys start with bsk_.", true);
-      store.set("bankstack.key", v);
+    const bindToggles = () => body.querySelectorAll("[data-toggle]").forEach((b) => b.addEventListener("click", () => {
+      const input = document.getElementById(b.dataset.toggle);
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      b.textContent = show ? "Hide" : "Show";
+    }));
+
+    const finish = (r) => {
+      store.set("bankstack.key", r.token);
+      if (r.device_token) store.set("bankjobz.device", r.device_token);
       updateNav();
+      state.pendingFlash = [`Signed in${r.company ? ` to ${r.company}` : ""}.`];
       after();
-    });
+    };
+
+    // Step 2: the 6-digit code (email or authenticator app), or a recovery code.
+    const codeStep = ({ challenge, method, email, purpose }) => {
+      const viaApp = method === "totp";
+      body.innerHTML = `
+        <form class="form" id="code-form" novalidate>
+          <h2>${purpose === "verify" ? "Confirm your email" : "Check it's you"}</h2>
+          <p>${viaApp ? "Open your authenticator app and enter the 6-digit code for BankJobz."
+            : `We emailed a 6-digit code to <b>${esc(email)}</b>. It expires in 10 minutes. You can also use the button in that email.`}</p>
+          <div class="field"><label for="a-code">${viaApp ? "Code from your app" : "Code from your email"}</label>
+            <input id="a-code" name="code" class="code-input" inputmode="${viaApp ? "text" : "numeric"}" autocomplete="one-time-code"
+              maxlength="${viaApp ? 11 : 6}" placeholder="123456" required>
+            ${viaApp ? `<span class="hint">Lost your phone? Enter one of your recovery codes instead (like a1b2c-3d4e5).</span>` : ""}</div>
+          <label class="check-line"><input type="checkbox" id="a-remember" checked> Trust this device for 30 days (don't ask for a code here)</label>
+          <button class="btn btn-lg" type="submit">${purpose === "verify" ? "Confirm and continue" : "Verify and sign in"}</button>
+          <div class="cta-row auth-links">
+            ${viaApp ? "" : `<button type="button" class="linkish" id="a-resend">Send a new code</button>`}
+            <button type="button" class="linkish" id="a-back">Start over</button>
+          </div>
+          <div class="msg" id="auth-msg" hidden></div>
+        </form>`;
+      const form = document.getElementById("code-form");
+      const input = document.getElementById("a-code");
+      input.focus();
+      if (!viaApp) input.addEventListener("input", () => {
+        input.value = input.value.replace(/\D/g, "").slice(0, 6);
+        if (input.value.length === 6) form.requestSubmit();
+      });
+      form.addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const code = input.value.trim();
+        if (code.length < 6) return showMsg(msgBox(), "Enter the 6-digit code.", true);
+        busy(form, true);
+        try {
+          finish(await api("/api/auth/verify", { method: "POST", body: JSON.stringify({
+            challenge, code, remember_device: document.getElementById("a-remember").checked }) }));
+        } catch (err) {
+          busy(form, false);
+          input.select();
+          showMsg(msgBox(), err.message, true);
+        }
+      });
+      document.getElementById("a-resend")?.addEventListener("click", async (e) => {
+        e.target.disabled = true;
+        try {
+          await api("/api/auth/resend", { method: "POST", body: JSON.stringify({ challenge }) });
+          showMsg(msgBox(), `A new code is on its way to ${email}.`, false);
+        } catch (err) { showMsg(msgBox(), err.message, true); }
+        setTimeout(() => (e.target.disabled = false), 30000);
+      });
+      document.getElementById("a-back").addEventListener("click", () => show("signin"));
+    };
+
+    const show = (mode, notice = "") => {
+      card.dataset.mode = mode;
+      card.querySelectorAll("[data-auth-tab]").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.authTab === mode)));
+      if (mode === "signin") {
+        body.innerHTML = `
+          <form class="form" id="signin-form" novalidate>
+            ${notice ? `<p class="msg">${esc(notice)}</p>` : ""}
+            <div class="field"><label for="a-email">Work email</label><input id="a-email" name="email" type="email" autocomplete="username" required></div>
+            ${pwField("a-password", "Password", "current-password")}
+            <button class="btn btn-lg" type="submit">Sign in</button>
+            <div class="cta-row auth-links"><button type="button" class="linkish" id="a-forgot">Forgot or set password</button></div>
+            <div class="msg" id="auth-msg" hidden></div>
+          </form>`;
+        const form = document.getElementById("signin-form");
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const email = form.email.value.trim(), password = form.password.value;
+          if (!/^\S+@\S+\.\S+$/.test(email) || !password) return showMsg(msgBox(), "Enter your email and password.", true);
+          if (state.demo) return showMsg(msgBox(), "Preview mode: sign-in works on the live site.", false);
+          busy(form, true);
+          try {
+            const r = await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email, password, device_token: deviceKey() }) });
+            if (r.token) return finish(r);
+            codeStep({ ...r, email });
+          } catch (err) {
+            busy(form, false);
+            showMsg(msgBox(), err.message, true);
+          }
+        });
+        document.getElementById("a-forgot").addEventListener("click", () => show("forgot"));
+      } else if (mode === "signup") {
+        body.innerHTML = `
+          <form class="form" id="signup-form" novalidate>
+            <p class="source-note">Free to create. Your own dashboard for postings, applicants and billing — you only pay ${PRICE}/month per job you post.</p>
+            <div class="row-2">
+              <div class="field"><label for="su-name">Your name</label><input id="su-name" name="contact_name" autocomplete="name" required></div>
+              <div class="field"><label for="su-title">Your title (optional)</label><input id="su-title" name="contact_title" autocomplete="organization-title" placeholder="HR Manager"></div>
+            </div>
+            <div class="row-2">
+              <div class="field"><label for="su-company">Institution name</label><input id="su-company" name="company" autocomplete="organization" required></div>
+              <div class="field"><label for="su-type">Type</label><select id="su-type" name="institution_type">${options(INST, "bank")}</select></div>
+            </div>
+            <div class="field"><label for="su-email">Work email</label><input id="su-email" name="email" type="email" autocomplete="username" required>
+              <span class="hint">You'll confirm it with a code. Applicant notifications and receipts go here too.</span></div>
+            ${pwField("a-newpw", "Create a password", "new-password", "At least 10 characters. A short phrase is easy to remember and hard to guess.")}
+            ${honeypot}
+            <button class="btn btn-lg" type="submit">Create account</button>
+            <p class="source-note">Every new sign-in is protected by a second step: a code by email, or from an authenticator app you can add later.</p>
+            <div class="msg" id="auth-msg" hidden></div>
+          </form>`;
+        const form = document.getElementById("signup-form");
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const data = Object.fromEntries(new FormData(form));
+          data.password = document.getElementById("a-newpw").value;
+          if (!data.contact_name.trim()) return showMsg(msgBox(), "Enter your name.", true);
+          if (!data.company.trim()) return showMsg(msgBox(), "Enter your institution's name.", true);
+          if (!/^\S+@\S+\.\S+$/.test(data.email)) return showMsg(msgBox(), "Enter a valid work email.", true);
+          if (data.password.length < 10) return showMsg(msgBox(), "Use at least 10 characters for your password.", true);
+          if (state.demo) return showMsg(msgBox(), "Preview mode: on the live site this creates your account.", false);
+          busy(form, true);
+          try {
+            const r = await api("/api/auth/signup", { method: "POST", body: JSON.stringify(data) });
+            codeStep({ ...r, email: data.email.trim(), purpose: "verify" });
+          } catch (err) {
+            busy(form, false);
+            showMsg(msgBox(), err.message, true);
+          }
+        });
+      } else if (mode === "forgot") {
+        body.innerHTML = `
+          <form class="form" id="forgot-form" novalidate>
+            <h2>Forgot or set your password</h2>
+            <p>We'll email you a code. Use this too if your account was created before passwords were added.</p>
+            <div class="field"><label for="f-email">Work email</label><input id="f-email" type="email" autocomplete="username" required></div>
+            <button class="btn btn-lg" type="submit">Email me a code</button>
+            <div class="cta-row auth-links"><button type="button" class="linkish" id="a-back">Back to sign in</button></div>
+            <div class="msg" id="auth-msg" hidden></div>
+          </form>`;
+        document.getElementById("a-back").addEventListener("click", () => show("signin"));
+        const form = document.getElementById("forgot-form");
+        form.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          const email = document.getElementById("f-email").value.trim();
+          if (!/^\S+@\S+\.\S+$/.test(email)) return showMsg(msgBox(), "Enter a valid email.", true);
+          if (state.demo) return showMsg(msgBox(), "Preview mode: password resets work on the live site.", false);
+          busy(form, true);
+          try {
+            const { challenge } = await api("/api/auth/forgot", { method: "POST", body: JSON.stringify({ email }) });
+            body.innerHTML = `
+              <form class="form" id="reset-form" novalidate>
+                <h2>Set a new password</h2>
+                <p>If <b>${esc(email)}</b> has an account, a 6-digit code is on its way. Enter it with your new password.</p>
+                <div class="field"><label for="r-code">Code from your email</label><input id="r-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></div>
+                ${pwField("a-resetpw", "New password", "new-password", "At least 10 characters.")}
+                <button class="btn btn-lg" type="submit">Save new password</button>
+                <div class="cta-row auth-links"><button type="button" class="linkish" id="a-resend">Send a new code</button><button type="button" class="linkish" id="a-back">Back to sign in</button></div>
+                <div class="msg" id="auth-msg" hidden></div>
+              </form>`;
+            bindToggles();
+            document.getElementById("a-back").addEventListener("click", () => show("signin"));
+            document.getElementById("a-resend").addEventListener("click", async (ev) => {
+              ev.target.disabled = true;
+              try { await api("/api/auth/resend", { method: "POST", body: JSON.stringify({ challenge }) }); showMsg(msgBox(), "A new code is on its way.", false); }
+              catch (err) { showMsg(msgBox(), err.message, true); }
+              setTimeout(() => (ev.target.disabled = false), 30000);
+            });
+            const rf = document.getElementById("reset-form");
+            rf.addEventListener("submit", async (ev) => {
+              ev.preventDefault();
+              const code = document.getElementById("r-code").value.trim(), password = document.getElementById("a-resetpw").value;
+              if (!/^\d{6}$/.test(code)) return showMsg(msgBox(), "Enter the 6-digit code.", true);
+              if (password.length < 10) return showMsg(msgBox(), "Use at least 10 characters.", true);
+              busy(rf, true);
+              try {
+                await api("/api/auth/reset", { method: "POST", body: JSON.stringify({ challenge, code, password }) });
+                show("signin", "Password saved. Sign in with it now.");
+                document.getElementById("a-email").value = email;
+              } catch (err) { busy(rf, false); showMsg(msgBox(), err.message, true); }
+            });
+          } catch (err) { busy(form, false); showMsg(msgBox(), err.message, true); }
+        });
+      }
+      bindToggles();
+      body.querySelector("input:not([type=hidden]):not([tabindex='-1'])")?.focus({ preventScroll: true });
+    };
+
+    card.querySelectorAll("[data-auth-tab]").forEach((t) => t.addEventListener("click", () => show(t.dataset.authTab)));
+    // An error message goes away as soon as they start fixing the field.
+    body.addEventListener("input", () => { const m = msgBox(); if (m && m.classList.contains("error")) m.hidden = true; });
+    show(card.dataset.mode);
   }
 
   const postIntro = (extra = "") => `
@@ -694,22 +839,29 @@
   async function viewPost() {
     // Hiring managers need an account first: it's where their postings, applicants and billing live.
     if (!key()) {
-      view.innerHTML = `<div class="wrap post">${postIntro(signInPanel())}${signUpPanel()}</div>`;
-      bindSignIn(() => { location.hash = "post"; route(); });
-      bindSignUp();
+      view.innerHTML = `<div class="wrap post">${postIntro(`<ul class="ticks">
+          <li>Your own dashboard: postings, applicants, notes and billing</li>
+          <li>Applicants by email and in one place, with résumés</li>
+          <li>Protected sign-in: password plus a one-time code</li></ul>`)}${authCard("signup")}</div>`;
+      bindAuth(() => { location.hash = "post"; route(); });
       return;
     }
-    let acct = null;
+    let acct = null, prefill = {};
     if (!state.demo) {
       try { acct = (await api("/api/employer", { auth: true })).account; }
       catch (err) { if (err.status === 401) return signedOut(err.message); }
+      // "Duplicate" from the dashboard: start from an existing posting.
+      if (state.duplicateFrom) {
+        try { prefill = await api(`/api/employer/jobs/${state.duplicateFrom}`, { auth: true }); } catch { prefill = {}; }
+        state.duplicateFrom = null;
+      }
     }
     view.innerHTML = `
       <div class="wrap post">
         ${postIntro(acct ? `<p class="source-note">Posting as <b>${esc(acct.company)}</b>${acct.contact_name ? ` · ${esc(acct.contact_name)}` : ""}. Billed to your account. <a href="#dashboard">Back to dashboard</a></p>` : "")}
         <form class="panel form" id="post-form" novalidate>
-          <h2>The role</h2>
-          ${roleFields({}, "p", aiDraftBox())}
+          <h2>${prefill.title ? "The role (copied from an earlier posting)" : "The role"}</h2>
+          ${roleFields(prefill, "p", aiDraftBox())}
           ${honeypot}
           <div class="checkout-line"><span>Due today, then monthly</span><strong>${PRICE}.00</strong></div>
           <button class="btn btn-lg" type="submit">Continue to payment</button>
@@ -745,6 +897,79 @@
   }
 
   // ---------- after checkout ----------
+  // The button in a sign-in, confirmation or reset email. The page asks the server what the link is
+  // for and which account it belongs to (never trusting the address), shows that, and needs a click —
+  // plus the sign-up password or a new password — before using it, so mail scanners can't use it up.
+  async function viewEmailLink() {
+    const pending = state.authLink;
+    if (!pending) { location.hash = "dashboard"; return; }
+    view.innerHTML = `<div class="wrap narrow"><section class="panel auth-card" id="link-card"><p>Checking your link…</p></section></div>`;
+    const card = document.getElementById("link-card");
+    let info;
+    try {
+      info = await api("/api/auth/link/peek", { method: "POST", body: JSON.stringify({ link: pending.link }) });
+    } catch (err) {
+      state.authLink = null;
+      card.innerHTML = `<h2>This link can't be used</h2><p class="msg error">${esc(err.message)}</p>
+        <div class="cta-row"><a class="btn" href="#dashboard">Go to sign in</a></div>`;
+      return;
+    }
+    const who = `<b>${esc(info.email)}</b>${info.company ? ` (${esc(info.company)})` : ""}`;
+    const copy = {
+      login: { h: "Finish signing in", p: `Sign in to the BankJobz employer account ${who} on this device.`, btn: "Continue", field: "" },
+      verify: { h: "Confirm your email", p: `Confirm the new BankJobz employer account for ${who}. Enter the password you chose when you signed up.`,
+        btn: "Confirm and sign in", field: pwField("a-linkpw", "Your password", "current-password") },
+      reset: { h: "Set a new password", p: `Choose a new password for ${who}. You'll be signed out everywhere else.`, btn: "Save new password",
+        field: pwField("a-linkpw", "New password", "new-password", "At least 10 characters. A short phrase is easy to remember and hard to guess.") },
+    }[info.purpose];
+    card.innerHTML = `
+      <form class="form" id="link-form" novalidate>
+        <h2>${copy.h}</h2>
+        <p>${copy.p}</p>
+        <input type="email" autocomplete="username" value="${esc(info.email)}" hidden aria-hidden="true" tabindex="-1">
+        ${copy.field}
+        <button class="btn btn-lg" type="submit">${copy.btn}</button>
+        <p class="source-note">Not you, or didn't ask for this? Close this page — nothing changes unless you continue.</p>
+        <div class="msg" id="link-msg" hidden></div>
+      </form>`;
+    card.querySelectorAll("[data-toggle]").forEach((b) => b.addEventListener("click", () => {
+      const input = document.getElementById(b.dataset.toggle);
+      const showIt = input.type === "password";
+      input.type = showIt ? "text" : "password";
+      b.textContent = showIt ? "Hide" : "Show";
+    }));
+    const form = document.getElementById("link-form");
+    const msg = document.getElementById("link-msg");
+    form.addEventListener("input", () => { if (msg.classList.contains("error")) msg.hidden = true; });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const password = copy.field ? document.getElementById("a-linkpw").value : undefined;
+      if (info.purpose === "reset" && password.length < 10) return showMsg(msg, "Use at least 10 characters.", true);
+      if (info.purpose === "verify" && !password) return showMsg(msg, "Enter your password.", true);
+      form.querySelectorAll("button, input").forEach((el) => (el.disabled = true));
+      try {
+        const r = await api("/api/auth/link", { method: "POST", body: JSON.stringify({ link: pending.link, password }) });
+        state.authLink = null;
+        if (r.reset) {
+          state.pendingFlash = ["Password saved. Sign in with it now."];
+        } else {
+          store.set("bankstack.key", r.token);
+          state.pendingFlash = [`Signed in${r.company ? ` to ${r.company}` : ""}.`];
+        }
+        updateNav();
+        location.hash = "dashboard";
+      } catch (err) {
+        form.querySelectorAll("button, input").forEach((el) => (el.disabled = false));
+        showMsg(msg, err.message, true);
+        if (err.status === 409 || /expired|already used/.test(err.message)) {
+          form.querySelector("button[type=submit]").outerHTML = `<a class="btn btn-lg" href="#dashboard">Go to sign in</a>`;
+          state.authLink = null;
+        }
+      }
+    });
+    document.getElementById("a-linkpw")?.focus();
+  }
+
   async function viewWelcome() {
     const sessionId = new URLSearchParams(location.search).get("session_id");
     view.innerHTML = `<div class="wrap narrow"><section class="panel" id="welcome"><p>Confirming your payment…</p></section></div>`;
@@ -755,26 +980,17 @@
     }
     try {
       const r = await api("/api/session?session_id=" + encodeURIComponent(sessionId));
-      store.set("bankstack.key", r.token);
       history.replaceState(null, "", "/#welcome");
       await loadJobs();
       const live = r.job && r.job.status === "open";
       box.innerHTML = `
         <h2>Thanks, ${esc(r.company)}. ${live ? "Your job is live." : "Payment received."}</h2>
         ${r.job ? `<p><b>${esc(r.job.title)}</b> ${live ? "is now listed as a Direct posting and renews monthly until you cancel it." : "will appear as soon as Stripe confirms the payment."}</p>` : ""}
-        <p>Applicants will arrive in your dashboard and by email. You can sign in from any device with your work email.</p>
+        <p>Applicants will arrive in your dashboard and by email. Sign in from any device with your email and password.</p>
         <div class="cta-row">
           <a class="btn" href="#dashboard">Go to dashboard</a>
           ${live ? `<a class="btn secondary" href="${jobHref(r.job.id)}">View your posting</a>` : ""}
-        </div>
-        <details style="margin-top:1rem"><summary class="source-note">Account key (optional, for signing in without email)</summary>
-          <div class="key-box" id="the-key">${esc(r.token)}</div>
-          <button class="btn secondary" id="copy-key" type="button">Copy key</button>
-        </details>`;
-      document.getElementById("copy-key").addEventListener("click", async (e) => {
-        try { await navigator.clipboard.writeText(r.token); e.target.textContent = "Copied"; }
-        catch { getSelection().selectAllChildren(document.getElementById("the-key")); }
-      });
+        </div>`;
       updateNav();
     } catch (err) {
       box.innerHTML = `<p class="msg error">${esc(err.message)}</p><p>If you were charged, refresh this page in a minute.</p>`;
@@ -792,106 +1008,350 @@
   function signedOut(message) {
     store.del("bankstack.key");
     updateNav();
-    view.innerHTML = `<div class="wrap post"><section class="post-intro"><p class="eyebrow">Employers</p><h1>Sign in to your dashboard</h1>
-      ${message ? `<p class="msg error">${esc(message)}</p>` : ""}${signInPanel()}</section>${signUpPanel()}</div>`;
-    bindSignIn(() => { location.hash = "dashboard"; route(); });
-    bindSignUp();
+    view.innerHTML = `<div class="wrap post">
+      <section class="post-intro"><p class="eyebrow">Employers</p><h1>Sign in to your dashboard</h1>
+        <p class="lede">Your postings, applicants and billing, from any device.</p>
+        ${message ? `<p class="msg error">${esc(message)}</p>` : ""}</section>
+      ${authCard("signin")}</div>`;
+    bindAuth(() => { location.hash = "dashboard"; route(); });
   }
 
-  async function downloadResume(appId, name, btn) {
-    btn.disabled = true;
+  async function downloadAuthed(path, name, btn) {
+    if (btn) btn.disabled = true;
     try {
-      const res = await fetch(`/api/employer/applications/${appId}/resume`, { headers: { authorization: "Bearer " + key() } });
+      const res = await fetch(path, { headers: { authorization: "Bearer " + key() } });
       if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Download failed.");
       const url = URL.createObjectURL(await res.blob());
-      const a = Object.assign(document.createElement("a"), { href: url, download: name || "resume" });
+      const a = Object.assign(document.createElement("a"), { href: url, download: name || "download" });
       document.body.append(a); a.click(); a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 10000);
-    } catch (err) { document.getElementById("act-msg").textContent = err.message; }
-    btn.disabled = false;
+    } catch (err) { const m = document.getElementById("act-msg"); if (m) m.textContent = err.message; }
+    if (btn) btn.disabled = false;
   }
+  const downloadResume = (appId, name, btn) => downloadAuthed(`/api/employer/applications/${appId}/resume`, name || "resume", btn);
 
-  async function viewDashboard() {
+  const DASH_TABS = [["overview", "Overview"], ["postings", "Postings"], ["applicants", "Applicants"], ["talent", "Talent pool"], ["account", "Account & security"]];
+  const stars = (n) => [1, 2, 3, 4, 5].map((i) => `<span aria-hidden="true">${i <= (n || 0) ? "★" : "☆"}</span>`).join("");
+
+  async function viewDashboard(tab) {
     if (!key()) return signedOut();
+    if (tab) state.dashTab = tab;
+    state.dashTab ||= "overview";
     view.innerHTML = `<div class="wrap dash"><p>Loading your dashboard…</p></div>`;
     let d;
     try { d = await api("/api/employer", { auth: true }); }
     catch (err) { return err.status === 401 ? signedOut(err.message) : (view.innerHTML = `<div class="wrap dash"><p class="msg error">${esc(err.message)}</p></div>`); }
-
-    const live = d.jobs.filter((j) => j.status === "open" && !j.cancel_at_period_end).length;
-    const newCount = d.applications.filter((a) => a.status === "new").length;
-    const apps = state.appFilter ? d.applications.filter((a) => String(a.job_id) === state.appFilter) : d.applications;
+    state.dash = d;
+    const first = d.account?.contact_name ? d.account.contact_name.split(" ")[0] : "";
 
     view.innerHTML = `
       <div class="wrap dash">
         <div class="dash-head">
-          <div style="display:grid;gap:0.3rem">
+          <div style="display:grid;gap:0.25rem">
+            <p class="eyebrow" style="margin:0">Employer dashboard</p>
             <h1 style="font-size:1.8rem">${esc(d.company)}</h1>
-            <span class="source-note">${d.account?.contact_name ? `${esc(d.account.contact_name)}${d.account.contact_title ? `, ${esc(d.account.contact_title)}` : ""} · ` : ""}${live} live ${live === 1 ? "posting" : "postings"} · ${PRICE}/month each · ${newCount} new ${newCount === 1 ? "applicant" : "applicants"}</span>
+            <span class="source-note">${d.account?.contact_name ? `${esc(d.account.contact_name)}${d.account.contact_title ? `, ${esc(d.account.contact_title)}` : ""} · ` : ""}${esc(d.email)}</span>
           </div>
           <div class="cta-row">
-            <a class="btn" href="#post">${d.jobs.length ? "Post another job" : "Post a job"}</a>
+            <a class="btn" href="#post">${d.jobs.length ? "Post a job" : "Post your first job"}</a>
             ${d.account?.has_billing ? `<button class="btn secondary" id="billing" type="button">Cards &amp; invoices</button>` : ""}
             <button class="linkish" id="signout" type="button">Sign out</button>
           </div>
         </div>
+        <nav class="profile-tabs dash-tabs" aria-label="Dashboard sections">
+          ${DASH_TABS.map(([k, v]) => `<button type="button" data-dtab="${k}"${k === state.dashTab ? ' aria-current="page"' : ""}>${v}${k === "applicants" && d.stats.new_applicants ? ` <span class="new-dot">${d.stats.new_applicants}</span>` : ""}</button>`).join("")}
+        </nav>
         <p class="source-note" id="act-msg" aria-live="polite"></p>
+        <div id="dash-body"></div>
+      </div>`;
+
+    const say = (t) => (document.getElementById("act-msg").textContent = t);
+    document.getElementById("signout").addEventListener("click", async () => {
+      try { await api("/api/auth/logout", { method: "POST", auth: true }); } catch { /* signing out locally regardless */ }
+      store.del("bankstack.key"); updateNav(); location.hash = "home";
+    });
+    document.getElementById("billing")?.addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try { const r = await api("/api/employer/billing", { method: "POST", auth: true }); location.href = r.url; }
+      catch (err) { e.target.disabled = false; say(err.message); }
+    });
+    view.querySelectorAll("[data-dtab]").forEach((b) => b.addEventListener("click", () => {
+      state.dashTab = b.dataset.dtab;
+      view.querySelectorAll("[data-dtab]").forEach((x) => (x.dataset.dtab === state.dashTab ? x.setAttribute("aria-current", "page") : x.removeAttribute("aria-current")));
+      say("");
+      renderTab();
+    }));
+    const goTab = (t, filters = {}) => {
+      Object.assign(state, filters);
+      view.querySelector(`[data-dtab="${t}"]`).click();
+      window.scrollTo({ top: 0 });
+    };
+
+    const renderTab = () => {
+      const body = document.getElementById("dash-body");
+      ({ overview: tabOverview, postings: tabPostings, applicants: tabApplicants, talent: tabTalent, account: tabAccount })[state.dashTab](body);
+    };
+
+    // ----- Overview -----
+    function tabOverview(body) {
+      const s = d.stats;
+      const totalPipe = Object.values(d.pipeline).reduce((a, b) => a + b, 0);
+      body.innerHTML = `
         ${d.jobs.length ? "" : `
         <section class="panel first-run">
-          <h2>Welcome to your dashboard${d.account?.contact_name ? `, ${esc(d.account.contact_name.split(" ")[0])}` : ""}</h2>
-          <p>This is where your postings, applicants and billing live. Post your first job — the AI assistant can write it from just the title — and applications will show up here and in your inbox.</p>
+          <h2>Welcome${first ? `, ${esc(first)}` : ""}</h2>
+          <p>This is where your postings, applicants and billing live. Post your first job — the AI assistant can write it from just the title — and applications show up here and in your inbox.</p>
           <a class="btn btn-lg" href="#post">Post your first job · ${PRICE}/mo</a>
         </section>`}
+        <div class="kpis">
+          <div class="kpi"><strong>${s.live_postings}</strong><span>live ${s.live_postings === 1 ? "posting" : "postings"}</span></div>
+          <div class="kpi"><strong>${s.applicants}</strong><span>applicants${s.new_applicants ? ` · <b>${s.new_applicants} new</b>` : ""}</span></div>
+          <div class="kpi"><strong>${s.applicants_7d}</strong><span>in the last 7 days</span></div>
+          <div class="kpi"><strong>${s.views.toLocaleString()}</strong><span>views of live postings</span></div>
+          <div class="kpi"><strong>${fmtMoney(s.monthly_cents)}</strong><span>per month (${s.renewing} renewing)</span></div>
+        </div>
+        ${d.attention.length ? `<section class="panel attention">
+          <h2 class="dash-title">Needs your attention</h2>
+          <ul>${d.attention.map((a) => `<li><b>${esc(a.title)}</b> — ${esc(a.text)} <button class="linkish" data-goto-postings type="button">Manage</button></li>`).join("")}</ul>
+        </section>` : ""}
         <section>
-          <h2 class="dash-title">Your postings</h2>
-          <div class="table-wrap"><table class="stack-table">
-            <thead><tr><th>Job</th><th>Billing</th><th style="text-align:right">Applicants</th><th>Actions</th></tr></thead>
-            <tbody>${d.jobs.length ? d.jobs.map((j) => {
-              const s = jobStatus(j);
-              const acts = [];
-              if (j.status !== "closed") acts.push(`<a href="#edit-${j.id}">Edit</a>`);
-              if (j.status === "pending") acts.push(`<button class="linkish" data-act="pay" data-id="${j.id}" type="button">Finish payment</button>`);
-              else if (j.status === "open" && j.cancel_at_period_end) acts.push(`<button class="linkish" data-act="resume" data-id="${j.id}" type="button">Keep renewing</button>`);
-              else if (j.status === "open") acts.push(`<button class="linkish" data-act="cancel" data-id="${j.id}" type="button">Cancel posting</button>`);
-              return `<tr>
-                <td data-label="Job">${j.status === "open" ? `<a href="${jobHref(j.id)}">${esc(j.title)}</a>` : esc(j.title)}<br><span class="source-note">${esc(j.location)}</span></td>
-                <td data-label="Billing"><span class="status-pill${s.bad ? " bad" : ""}">${esc(s.label)}</span></td>
-                <td data-label="Applicants" class="num">${j.applications}${j.new_applications ? ` <span class="new-dot">${j.new_applications} new</span>` : ""}</td>
-                <td data-label="Actions" class="acts">${acts.join(" ")}</td></tr>`;
-            }).join("") : `<tr><td colspan="4" class="source-note">No postings yet. <a href="#post">Post your first job</a>.</td></tr>`}</tbody>
-          </table></div>
+          <h2 class="dash-title">Hiring pipeline</h2>
+          ${totalPipe ? `<div class="pipeline">${Object.entries(d.pipeline).map(([k, n]) => `
+            <button type="button" class="pipe-step${n ? "" : " empty"}" data-goto-stage="${k}">
+              <strong>${n}</strong><span>${esc(STAGES[k])}</span>
+              <i style="width:${Math.max(n ? 6 : 0, Math.round((n / totalPipe) * 100))}%"></i>
+            </button>`).join("")}</div>`
+            : `<p class="source-note">Your pipeline fills in as candidates apply. Move them through stages from the Applicants tab.</p>`}
         </section>
         <section>
-          <div class="dash-row">
-            <h2 class="dash-title">Applicants</h2>
-            ${d.jobs.length > 1 ? `<select id="app-filter" aria-label="Show applicants for"><option value="">All postings</option>${d.jobs.map((j) => `<option value="${j.id}"${String(j.id) === state.appFilter ? " selected" : ""}>${esc(j.title)}</option>`).join("")}</select>` : ""}
-          </div>
-          <div class="table-wrap"><table class="stack-table">
-            <thead><tr><th>Candidate</th><th>Job</th><th>Received</th><th>Résumé &amp; links</th><th>Stage</th></tr></thead>
-            <tbody>${apps.length ? apps.map((a) => `<tr${a.status === "new" ? ' class="is-new"' : ""}>
-              <td data-label="Candidate"><b>${esc(a.name)}</b><br><span class="source-note">${esc(a.email)}${a.phone ? " · " + esc(a.phone) : ""}</span>${a.cover_note ? `<details><summary>Note</summary><p class="prose">${esc(a.cover_note)}</p></details>` : ""}</td>
-              <td data-label="Job">${esc(a.job_title)}</td>
-              <td data-label="Received" class="num">${esc(fmtDate(a.created_at))}</td>
-              <td data-label="Résumé">${a.has_resume ? `<button class="linkish" data-resume="${a.id}" data-name="${esc(a.resume_name)}" type="button">${esc(a.resume_name || "Résumé")}</button> <span class="source-note">${a.resume_size ? fmtSize(a.resume_size) : ""}</span><br>` : ""}${a.resume_url ? `<a href="${esc(a.resume_url)}" target="_blank" rel="noopener">Résumé link</a> ` : ""}${a.linkedin_url ? `<a href="${esc(a.linkedin_url)}" target="_blank" rel="noopener">LinkedIn</a>` : ""}${!a.has_resume && !a.resume_url && !a.linkedin_url ? '<span class="source-note">None</span>' : ""}</td>
-              <td data-label="Stage"><select class="stage" data-app="${a.id}" aria-label="Stage for ${esc(a.name)}">${options(STAGES, a.status)}</select></td></tr>`).join("")
-              : `<tr><td colspan="5" class="source-note">Applicants show up here, and in your inbox, as they apply.</td></tr>`}</tbody>
-          </table></div>
+          <div class="dash-row"><h2 class="dash-title">Latest applicants</h2>${d.applications.length ? `<button class="linkish" data-goto-applicants type="button">See all ${d.applications.length} →</button>` : ""}</div>
+          ${d.applications.length ? `<ul class="recent-apps">${d.applications.slice(0, 5).map((a) => `
+            <li${a.status === "new" ? ' class="is-new"' : ""}><b>${esc(a.name)}</b> <span class="source-note">for ${esc(a.job_title)} · ${esc(fmtDate(a.created_at))}</span>
+              <span class="status-pill${a.status === "rejected" ? " bad" : ""}">${esc(STAGES[a.status])}</span></li>`).join("")}</ul>`
+            : `<p class="source-note">No applicants yet. They'll appear here, and in your inbox, as they apply.</p>`}
         </section>
-        <section>
-          <h2 class="dash-title">Talent pool</h2>
-          <p class="source-note">Candidates who opted in, shown anonymously — no names or contact details. Invite one to a posting and they get an email with your role; you only learn who they are if they apply. Included while you have a live posting.</p>
-          <div class="filters talent-filters">
-            <select id="t-cat" aria-label="Department"><option value="">Any department</option>${options(CATEGORIES, "")}</select>
-            <input id="t-state" maxlength="2" placeholder="State, e.g. AL" aria-label="State" style="text-transform:uppercase">
-            <select id="t-core" aria-label="Core system"><option value="">Any core system</option>${options(CORE_SYSTEMS, "")}</select>
-            <select id="t-lic" aria-label="License"><option value="">Any license</option>${options(LICENSES, "")}</select>
-            <button class="btn secondary" id="t-load" type="button">Browse candidates</button>
-          </div>
-          <div id="talent-list" class="talent-list"></div>
-        </section>
-        <section>
-          <h2 class="dash-title">Your account</h2>
-          <form class="panel form account-form" id="account-form" novalidate>
+        ${d.account.mfa_method === "email" ? `<p class="source-note tip">Tip: for stronger sign-in security, add an authenticator app under <button class="linkish" data-goto-account type="button">Account &amp; security</button>.</p>` : ""}`;
+      body.querySelectorAll("[data-goto-stage]").forEach((b) => b.addEventListener("click", () => goTab("applicants", { appStage: b.dataset.gotoStage, appFilter: "" })));
+      body.querySelectorAll("[data-goto-applicants]").forEach((b) => b.addEventListener("click", () => goTab("applicants", { appStage: "", appFilter: "" })));
+      body.querySelectorAll("[data-goto-postings]").forEach((b) => b.addEventListener("click", () => goTab("postings")));
+      body.querySelectorAll("[data-goto-account]").forEach((b) => b.addEventListener("click", () => goTab("account")));
+    }
+
+    // ----- Postings -----
+    function tabPostings(body) {
+      body.innerHTML = `
+        <div class="table-wrap"><table class="stack-table">
+          <thead><tr><th>Job</th><th>Status</th><th class="num">Views</th><th class="num">Applicants</th><th class="num">Apply rate</th><th>Actions</th></tr></thead>
+          <tbody>${d.jobs.length ? d.jobs.map((j) => {
+            const s = jobStatus(j);
+            const acts = [];
+            if (j.status === "open") acts.push(`<a href="${jobHref(j.id)}">View</a>`);
+            if (j.status !== "closed") acts.push(`<a href="#edit-${j.id}">Edit</a>`);
+            acts.push(`<button class="linkish" data-dup="${j.id}" type="button">Duplicate</button>`);
+            if (j.applications) acts.push(`<button class="linkish" data-see-apps="${j.id}" type="button">Applicants</button>`);
+            if (j.status === "pending") acts.push(`<button class="linkish" data-act="pay" data-id="${j.id}" type="button">Finish payment</button>`);
+            else if (j.status === "open" && j.cancel_at_period_end) acts.push(`<button class="linkish" data-act="resume" data-id="${j.id}" type="button">Keep renewing</button>`);
+            else if (j.status === "open") acts.push(`<button class="linkish danger" data-act="cancel" data-id="${j.id}" type="button">Cancel</button>`);
+            const rate = j.views ? Math.round((j.applications / j.views) * 1000) / 10 + "%" : "—";
+            return `<tr>
+              <td data-label="Job"><b>${esc(j.title)}</b><br><span class="source-note">${esc(j.location)} · posted ${esc(fmtDate(j.posted_at))}</span></td>
+              <td data-label="Status"><span class="status-pill${s.bad ? " bad" : ""}">${esc(s.label)}</span></td>
+              <td data-label="Views" class="num">${j.views.toLocaleString()}</td>
+              <td data-label="Applicants" class="num">${j.applications}${j.new_applications ? ` <span class="new-dot">${j.new_applications} new</span>` : ""}</td>
+              <td data-label="Apply rate" class="num">${rate}</td>
+              <td data-label="Actions" class="acts">${acts.join(" ")}</td></tr>`;
+          }).join("") : `<tr><td colspan="6" class="source-note">No postings yet. <a href="#post">Post your first job</a>.</td></tr>`}</tbody>
+        </table></div>
+        <p class="source-note">Each posting is ${PRICE}/month and renews until you cancel; a cancelled posting stays live through the month you've paid for. <b>Duplicate</b> starts a new posting pre-filled from an old one.</p>`;
+      body.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", async () => {
+        if (b.dataset.act === "cancel" && !confirmInline(b, "Stop renewing? It stays live until the paid month ends.")) return;
+        b.disabled = true;
+        try {
+          const r = await api(`/api/employer/jobs/${b.dataset.id}/${b.dataset.act}`, { method: "POST", auth: true });
+          if (r.url) { location.href = r.url; return; }
+          await loadJobs();
+          viewDashboard("postings");
+        } catch (err) { b.disabled = false; say(err.message); }
+      }));
+      body.querySelectorAll("[data-dup]").forEach((b) => b.addEventListener("click", () => { state.duplicateFrom = b.dataset.dup; location.hash = "post"; }));
+      body.querySelectorAll("[data-see-apps]").forEach((b) => b.addEventListener("click", () => goTab("applicants", { appFilter: b.dataset.seeApps, appStage: "" })));
+    }
+
+    // A second click confirms a destructive action, instead of a browser pop-up.
+    function confirmInline(btn, text) {
+      if (btn.dataset.armed) return true;
+      btn.dataset.armed = "1";
+      const original = btn.textContent;
+      btn.textContent = "Click again to confirm";
+      say(text);
+      setTimeout(() => { delete btn.dataset.armed; btn.textContent = original; }, 5000);
+      return false;
+    }
+
+    // ----- Applicants -----
+    function tabApplicants(body) {
+      state.appSearch ||= "";
+      body.innerHTML = `
+        <div class="filters app-filters">
+          <input id="ap-q" type="search" placeholder="Search name or email" aria-label="Search applicants" value="${esc(state.appSearch)}">
+          <select id="ap-job" aria-label="Posting"><option value="">All postings</option>${d.jobs.map((j) => `<option value="${j.id}"${String(j.id) === String(state.appFilter || "") ? " selected" : ""}>${esc(j.title)}</option>`).join("")}</select>
+          <select id="ap-stage" aria-label="Stage"><option value="">All stages</option>${options(STAGES, state.appStage || "")}</select>
+          <select id="ap-sort" aria-label="Sort"><option value="new">Newest first</option><option value="rating"${state.appSort === "rating" ? " selected" : ""}>Highest rated</option></select>
+          <button class="btn secondary" id="ap-export" type="button">Export CSV</button>
+        </div>
+        <p class="source-note" id="ap-count"></p>
+        <div id="ap-list" class="app-list"></div>`;
+      const draw = () => {
+        const q = state.appSearch.toLowerCase();
+        let list = d.applications.filter((a) =>
+          (!state.appFilter || String(a.job_id) === String(state.appFilter)) &&
+          (!state.appStage || a.status === state.appStage) &&
+          (!q || `${a.name} ${a.email}`.toLowerCase().includes(q)));
+        if (state.appSort === "rating") list = [...list].sort((a, b) => (b.rating || 0) - (a.rating || 0));
+        document.getElementById("ap-count").textContent = d.applications.length
+          ? `${list.length} of ${d.applications.length} applicants` : "";
+        document.getElementById("ap-list").innerHTML = list.length ? list.map((a) => `
+          <article class="app-card${a.status === "new" ? " is-new" : ""}" data-app-card="${a.id}">
+            <div class="app-top">
+              <div><b class="app-name">${esc(a.name)}</b> <span class="source-note">applied for ${esc(a.job_title)} · ${esc(fmtDate(a.created_at))}</span></div>
+              <div class="app-controls">
+                <div class="stars" role="group" aria-label="Rating">${[1, 2, 3, 4, 5].map((i) => `<button type="button" data-rate="${i}" aria-label="${i} star${i > 1 ? "s" : ""}" class="${i <= (a.rating || 0) ? "on" : ""}">★</button>`).join("")}</div>
+                <select class="stage" data-app="${a.id}" aria-label="Stage for ${esc(a.name)}">${options(STAGES, a.status)}</select>
+              </div>
+            </div>
+            <div class="app-contact">
+              <a href="mailto:${esc(a.email)}">${esc(a.email)}</a>${a.phone ? ` · <a href="tel:${esc(a.phone)}">${esc(a.phone)}</a>` : ""}
+              ${a.linkedin_url ? ` · <a href="${esc(a.linkedin_url)}" target="_blank" rel="noopener">LinkedIn</a>` : ""}
+              ${a.has_resume ? ` · <button class="linkish" data-resume="${a.id}" data-name="${esc(a.resume_name)}" type="button">Résumé (${esc(a.resume_name || "file")}${a.resume_size ? `, ${fmtSize(a.resume_size)}` : ""})</button>` : ""}
+              ${a.resume_url ? ` · <a href="${esc(a.resume_url)}" target="_blank" rel="noopener">Résumé link</a>` : ""}
+            </div>
+            ${a.cover_note ? `<details><summary>Their note</summary><p class="prose">${esc(a.cover_note)}</p></details>` : ""}
+            <details${a.notes ? " open" : ""}><summary>Your private notes${a.notes ? "" : " (only your team sees these)"}</summary>
+              <textarea data-notes rows="3" maxlength="5000" placeholder="Interview notes, follow-ups…">${esc(a.notes || "")}</textarea>
+              <button class="btn secondary" data-save-notes type="button">Save notes</button>
+            </details>
+          </article>`).join("")
+          : `<p class="source-note">${d.applications.length ? "No applicants match those filters." : "Applicants show up here, and in your inbox, as they apply."}</p>`;
+        bindCards();
+      };
+      const saveNotes = async (card, patch) => {
+        const app = d.applications.find((x) => String(x.id) === card.dataset.appCard);
+        const next = { notes: app.notes || "", rating: app.rating ?? null, ...patch };
+        await api(`/api/employer/applications/${app.id}/notes`, { method: "POST", auth: true, body: JSON.stringify(next) });
+        Object.assign(app, next);
+      };
+      const bindCards = () => {
+        body.querySelectorAll("[data-resume]").forEach((b) => b.addEventListener("click", () => downloadResume(b.dataset.resume, b.dataset.name, b)));
+        body.querySelectorAll("select.stage").forEach((s) => s.addEventListener("change", async () => {
+          s.disabled = true;
+          try {
+            await api(`/api/employer/applications/${s.dataset.app}/status`, { method: "POST", auth: true, body: JSON.stringify({ status: s.value }) });
+            const app = d.applications.find((x) => String(x.id) === s.dataset.app);
+            d.pipeline[app.status]--; d.pipeline[s.value]++;
+            app.status = s.value;
+            s.closest(".app-card").classList.toggle("is-new", s.value === "new");
+            say(`${app.name} moved to ${STAGES[s.value]}.`);
+          } catch (err) { say(err.message); }
+          s.disabled = false;
+        }));
+        body.querySelectorAll("[data-rate]").forEach((b) => b.addEventListener("click", async () => {
+          const card = b.closest("[data-app-card]");
+          const app = d.applications.find((x) => String(x.id) === card.dataset.appCard);
+          const val = Number(b.dataset.rate) === app.rating ? null : Number(b.dataset.rate); // click again to clear
+          try {
+            await saveNotes(card, { rating: val });
+            card.querySelectorAll("[data-rate]").forEach((x) => x.classList.toggle("on", Number(x.dataset.rate) <= (val || 0)));
+            say(val ? `Rated ${app.name} ${val}/5.` : `Cleared ${app.name}'s rating.`);
+          } catch (err) { say(err.message); }
+        }));
+        body.querySelectorAll("[data-save-notes]").forEach((b) => b.addEventListener("click", async () => {
+          const card = b.closest("[data-app-card]");
+          b.disabled = true;
+          try { await saveNotes(card, { notes: card.querySelector("[data-notes]").value }); say("Notes saved."); }
+          catch (err) { say(err.message); }
+          b.disabled = false;
+        }));
+      };
+      document.getElementById("ap-q").addEventListener("input", (e) => { state.appSearch = e.target.value; draw(); });
+      document.getElementById("ap-job").addEventListener("change", (e) => { state.appFilter = e.target.value; draw(); });
+      document.getElementById("ap-stage").addEventListener("change", (e) => { state.appStage = e.target.value; draw(); });
+      document.getElementById("ap-sort").addEventListener("change", (e) => { state.appSort = e.target.value; draw(); });
+      document.getElementById("ap-export").addEventListener("click", (e) => {
+        const p = new URLSearchParams();
+        if (state.appFilter) p.set("job_id", state.appFilter);
+        if (state.appStage) p.set("status", state.appStage);
+        downloadAuthed(`/api/employer/applications.csv?${p}`, `bankjobz-applicants-${new Date().toISOString().slice(0, 10)}.csv`, e.target);
+      });
+      draw();
+    }
+
+    // ----- Talent pool -----
+    function tabTalent(body) {
+      body.innerHTML = `
+        <p class="source-note">Candidates who opted in, shown anonymously — no names or contact details. Invite one to a posting and they get an email with your role; you only learn who they are if they apply. Included while you have a live posting.</p>
+        <div class="filters talent-filters">
+          <select id="t-cat" aria-label="Department"><option value="">Any department</option>${options(CATEGORIES, "")}</select>
+          <input id="t-state" maxlength="2" placeholder="State, e.g. AL" aria-label="State" style="text-transform:uppercase">
+          <select id="t-core" aria-label="Core system"><option value="">Any core system</option>${options(CORE_SYSTEMS, "")}</select>
+          <select id="t-lic" aria-label="License"><option value="">Any license</option>${options(LICENSES, "")}</select>
+          <button class="btn secondary" id="t-load" type="button">Browse candidates</button>
+        </div>
+        <div id="talent-list" class="talent-list"></div>`;
+      document.getElementById("t-load").addEventListener("click", async () => {
+        const list = document.getElementById("talent-list");
+        list.innerHTML = `<p class="source-note">Looking through the pool…</p>`;
+        const params = new URLSearchParams();
+        const cat = document.getElementById("t-cat").value, st = document.getElementById("t-state").value.trim();
+        const core = document.getElementById("t-core").value, lic = document.getElementById("t-lic").value;
+        if (cat) params.set("category", cat);
+        if (st) params.set("state", st);
+        if (core) params.set("core_system", core);
+        if (lic) params.set("license", lic);
+        let r;
+        try { r = await api("/api/employer/talent?" + params, { auth: true }); }
+        catch (err) { list.innerHTML = `<p class="msg error">${esc(err.message)}</p>`; return; }
+        if (!r.candidates.length) {
+          list.innerHTML = `<p class="source-note">No candidates match those filters yet. The pool grows as job seekers opt in — try fewer filters or check back.</p>`;
+          return;
+        }
+        list.innerHTML = r.candidates.map((c) => `
+          <div class="talent-card">
+            <div class="t-main">
+              <b>${esc(c.location || "Location not given")}</b> · ${esc({ any: "Any arrangement", onsite: "On-site", hybrid: "Hybrid", remote: "Remote" }[c.work_mode_pref] || "")}${c.has_resume ? " · Résumé on file" : ""}
+              <span class="tags">${(c.categories || []).map((k) => `<span class="tag">${esc(CATEGORIES[k] || k)}</span>`).join("")}
+                ${(c.core_systems || []).map((k) => `<span class="tag direct">${esc(CORE_SYSTEMS[k] || k)}</span>`).join("")}
+                ${(c.licenses || []).map((k) => `<span class="tag">${esc(LICENSES[k] || k)}</span>`).join("")}</span>
+              ${c.summary ? `<p class="t-summary">${esc(c.summary)}</p>` : ""}
+            </div>
+            <div class="t-invite">
+              <select data-tjob aria-label="Posting to invite them to">${r.jobs.map((j) => `<option value="${j.id}"${(c.invited_job_ids || []).includes(j.id) ? " disabled" : ""}>${esc(j.title)}</option>`).join("")}</select>
+              <input data-tnote maxlength="200" placeholder="Optional note to the candidate">
+              <button class="btn" data-invite="${c.id}" type="button">Invite to apply</button>
+            </div>
+          </div>`).join("");
+        list.querySelectorAll("[data-invite]").forEach((b) => b.addEventListener("click", async () => {
+          const card = b.closest(".talent-card");
+          b.disabled = true;
+          b.textContent = "Inviting…";
+          try {
+            const res = await api(`/api/employer/talent/${b.dataset.invite}/invite`, { method: "POST", auth: true,
+              body: JSON.stringify({ job_id: card.querySelector("[data-tjob]").value, note: card.querySelector("[data-tnote]").value }) });
+            card.querySelector(".t-invite").innerHTML = `<span class="status-pill">${res.duplicate ? "Already invited" : "Invited — they'll get an email"}</span>`;
+          } catch (err) {
+            b.disabled = false;
+            b.textContent = "Invite to apply";
+            say(err.message);
+          }
+        }));
+      });
+    }
+
+    // ----- Account & security -----
+    async function tabAccount(body) {
+      body.innerHTML = `
+        <div class="acct-grid">
+          <form class="panel form" id="account-form" novalidate>
+            <h2 class="dash-title">Your details</h2>
             <div class="row-2">
               <div class="field"><label for="ac-name">Your name</label><input id="ac-name" name="contact_name" value="${esc(d.account?.contact_name || "")}" required></div>
               <div class="field"><label for="ac-title">Your title</label><input id="ac-title" name="contact_title" value="${esc(d.account?.contact_title || "")}" placeholder="HR Manager"></div>
@@ -905,99 +1365,188 @@
               <div class="field"><label for="ac-phone">Phone (optional)</label><input id="ac-phone" name="phone" type="tel" value="${esc(d.account?.phone || "")}"></div>
               <div class="field"><label>Sign-in &amp; notification email</label><input value="${esc(d.email)}" disabled></div>
             </div>
-            <div class="cta-row"><button class="btn secondary" type="submit">Save account</button></div>
+            <div class="cta-row"><button class="btn secondary" type="submit">Save details</button></div>
             <div class="msg" id="account-msg" hidden></div>
           </form>
-        </section>
-      </div>`;
-
-    const say = (t) => (document.getElementById("act-msg").textContent = t);
-    document.getElementById("account-form").addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const msg = document.getElementById("account-msg");
-      const data = Object.fromEntries(new FormData(e.currentTarget));
-      if (!data.contact_name.trim() || !data.company.trim()) return showMsg(msg, "Your name and institution are required.", true);
-      try {
-        await api("/api/employer/account", { method: "PUT", auth: true, body: JSON.stringify(data) });
-        showMsg(msg, "Account saved.", false);
-      } catch (err) { showMsg(msg, err.message, true); }
-    });
-    document.getElementById("signout").addEventListener("click", () => {
-      store.del("bankstack.key"); updateNav(); location.hash = "home";
-    });
-    document.getElementById("billing")?.addEventListener("click", async (e) => {
-      e.target.disabled = true;
-      try { const r = await api("/api/employer/billing", { method: "POST", auth: true }); location.href = r.url; }
-      catch (err) { e.target.disabled = false; say(err.message); }
-    });
-    const filter = document.getElementById("app-filter");
-    if (filter) filter.addEventListener("change", (e) => { state.appFilter = e.target.value; viewDashboard(); });
-    view.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", async () => {
-      b.disabled = true;
-      try {
-        const r = await api(`/api/employer/jobs/${b.dataset.id}/${b.dataset.act}`, { method: "POST", auth: true });
-        if (r.url) { location.href = r.url; return; }
-        await loadJobs();
-        viewDashboard();
-      } catch (err) { b.disabled = false; say(err.message); }
-    }));
-    document.getElementById("t-load").addEventListener("click", async () => {
-      const list = document.getElementById("talent-list");
-      list.innerHTML = `<p class="source-note">Looking through the pool…</p>`;
-      const params = new URLSearchParams();
-      const cat = document.getElementById("t-cat").value, st = document.getElementById("t-state").value.trim();
-      const core = document.getElementById("t-core").value, lic = document.getElementById("t-lic").value;
-      if (cat) params.set("category", cat);
-      if (st) params.set("state", st);
-      if (core) params.set("core_system", core);
-      if (lic) params.set("license", lic);
-      let r;
-      try { r = await api("/api/employer/talent?" + params, { auth: true }); }
-      catch (err) { list.innerHTML = `<p class="msg error">${esc(err.message)}</p>`; return; }
-      if (!r.candidates.length) {
-        list.innerHTML = `<p class="source-note">No candidates match those filters yet. The pool grows as job seekers opt in — try fewer filters or check back.</p>`;
-        return;
-      }
-      list.innerHTML = r.candidates.map((c) => `
-        <div class="talent-card">
-          <div class="t-main">
-            <b>${esc(c.location || "Location not given")}</b> · ${esc({ any: "Any arrangement", onsite: "On-site", hybrid: "Hybrid", remote: "Remote" }[c.work_mode_pref] || "")}${c.has_resume ? " · Résumé on file" : ""}
-            <span class="tags">${(c.categories || []).map((k) => `<span class="tag">${esc(CATEGORIES[k] || k)}</span>`).join("")}
-              ${(c.core_systems || []).map((k) => `<span class="tag direct">${esc(CORE_SYSTEMS[k] || k)}</span>`).join("")}
-              ${(c.licenses || []).map((k) => `<span class="tag">${esc(LICENSES[k] || k)}</span>`).join("")}</span>
-            ${c.summary ? `<p class="t-summary">${esc(c.summary)}</p>` : ""}
-          </div>
-          <div class="t-invite">
-            <select data-tjob aria-label="Posting to invite them to">${r.jobs.map((j) => `<option value="${j.id}"${(c.invited_job_ids || []).includes(j.id) ? " disabled" : ""}>${esc(j.title)}</option>`).join("")}</select>
-            <input data-tnote maxlength="200" placeholder="Optional note to the candidate">
-            <button class="btn" data-invite="${c.id}" type="button">Invite to apply</button>
-          </div>
-        </div>`).join("");
-      list.querySelectorAll("[data-invite]").forEach((b) => b.addEventListener("click", async () => {
-        const card = b.closest(".talent-card");
-        b.disabled = true;
-        b.textContent = "Inviting…";
+          <div id="security-box" class="panel"><p class="source-note">Loading security settings…</p></div>
+        </div>`;
+      document.getElementById("account-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const msg = document.getElementById("account-msg");
+        const data = Object.fromEntries(new FormData(e.currentTarget));
+        if (!data.contact_name.trim() || !data.company.trim()) return showMsg(msg, "Your name and institution are required.", true);
         try {
-          const res = await api(`/api/employer/talent/${b.dataset.invite}/invite`, { method: "POST", auth: true,
-            body: JSON.stringify({ job_id: card.querySelector("[data-tjob]").value, note: card.querySelector("[data-tnote]").value }) });
-          card.querySelector(".t-invite").innerHTML = `<span class="status-pill">${res.duplicate ? "Already invited" : "Invited — they'll get an email"}</span>`;
-        } catch (err) {
-          b.disabled = false;
-          b.textContent = "Invite to apply";
-          say(err.message);
-        }
+          await api("/api/employer/account", { method: "PUT", auth: true, body: JSON.stringify(data) });
+          Object.assign(d.account, data);
+          showMsg(msg, "Details saved.", false);
+        } catch (err) { showMsg(msg, err.message, true); }
+      });
+      await drawSecurity();
+    }
+
+    async function drawSecurity() {
+      const box = document.getElementById("security-box");
+      if (!box) return;
+      let s;
+      try { s = await api("/api/employer/security", { auth: true }); }
+      catch (err) { if (err.status === 401) return signedOut(err.message); box.innerHTML = `<p class="msg error">${esc(err.message)}</p>`; return; }
+      const app = s.mfa_method === "totp";
+      const device = (ua) => {
+        const u = String(ua || "");
+        const browser = /Edg\//.test(u) ? "Edge" : /Chrome\//.test(u) ? "Chrome" : /Firefox\//.test(u) ? "Firefox" : /Safari\//.test(u) ? "Safari" : "Browser";
+        const os = /iPhone|iPad/.test(u) ? "iPhone/iPad" : /Android/.test(u) ? "Android" : /Windows/.test(u) ? "Windows" : /Mac OS X/.test(u) ? "Mac" : /Linux/.test(u) ? "Linux" : "device";
+        return `${browser} on ${os}`;
+      };
+      box.innerHTML = `
+        <h2 class="dash-title">Sign-in &amp; security</h2>
+        <div class="sec-block">
+          <h3>Second step at sign-in</h3>
+          <p>${app ? `<span class="status-pill">Authenticator app</span> New devices ask for a code from your app. ${s.recovery_codes_left} recovery ${s.recovery_codes_left === 1 ? "code" : "codes"} left.`
+            : `<span class="status-pill">Email code</span> New devices get a 6-digit code by email. An authenticator app (Microsoft or Google Authenticator) is stronger and works offline.`}</p>
+          <div class="cta-row">${app
+            ? `<button class="btn secondary" id="sec-newcodes" type="button">New recovery codes</button><button class="linkish danger" id="sec-totp-off" type="button">Turn off app, use email codes</button>`
+            : `<button class="btn" id="sec-totp-on" type="button">Set up authenticator app</button>`}</div>
+          <div id="sec-mfa-area"></div>
+        </div>
+        <div class="sec-block">
+          <h3>Password</h3>
+          <p class="source-note">${s.password_changed_at ? `Last changed ${esc(fmtDate(s.password_changed_at))}.` : ""} Changing it signs out your other devices.</p>
+          <form class="form" id="sec-pw" novalidate>
+            <div class="row-2">${pwField("a-curpw", "Current password", "current-password")}${pwField("a-nextpw", "New password", "new-password", "At least 10 characters.")}</div>
+            <div class="cta-row"><button class="btn secondary" type="submit">Change password</button></div>
+          </form>
+        </div>
+        <div class="sec-block">
+          <h3>Where you're signed in</h3>
+          <ul class="sessions">${s.sessions.map((x) => `<li>
+            <span><b>${esc(device(x.user_agent))}</b>${x.current ? ' <span class="status-pill">This device</span>' : ""}<br>
+            <span class="source-note">Signed in ${esc(fmtDate(x.created_at))} · last active ${esc(fmtDate(x.last_seen_at))}${x.ip ? ` · ${esc(x.ip)}` : ""}</span></span>
+            ${x.current ? "" : `<button class="linkish danger" data-revoke="${x.id}" type="button">Sign out</button>`}</li>`).join("")}</ul>
+          <div class="cta-row">
+            ${s.sessions.length > 1 ? `<button class="btn secondary" id="sec-revoke-all" type="button">Sign out everywhere else</button>` : ""}
+            ${s.trusted_devices ? `<button class="linkish" id="sec-forget" type="button">Forget ${s.trusted_devices} trusted ${s.trusted_devices === 1 ? "device" : "devices"} (ask for codes again)</button>` : ""}
+          </div>
+        </div>
+        <div class="sec-block">
+          <h3>Notifications</h3>
+          <label class="check-line"><input type="checkbox" id="sec-notify"${s.notify_each_applicant ? " checked" : ""}> Email me each time someone applies</label>
+          <p class="source-note">Off means applicants still arrive in your dashboard — you just won't get an email for each one.</p>
+        </div>
+        <div class="msg" id="sec-msg" hidden></div>`;
+      const msg = () => document.getElementById("sec-msg");
+      box.querySelectorAll("[data-toggle]").forEach((b) => b.addEventListener("click", () => {
+        const input = document.getElementById(b.dataset.toggle);
+        const show = input.type === "password";
+        input.type = show ? "text" : "password";
+        b.textContent = show ? "Hide" : "Show";
       }));
-    });
-    view.querySelectorAll("[data-resume]").forEach((b) => b.addEventListener("click", () => downloadResume(b.dataset.resume, b.dataset.name, b)));
-    view.querySelectorAll("select.stage").forEach((s) => s.addEventListener("change", async () => {
-      s.disabled = true;
-      try {
-        await api(`/api/employer/applications/${s.dataset.app}/status`, { method: "POST", auth: true, body: JSON.stringify({ status: s.value }) });
-        s.closest("tr").classList.toggle("is-new", s.value === "new");
-        say(`Moved to ${STAGES[s.value]}.`);
-      } catch (err) { say(err.message); }
-      s.disabled = false;
-    }));
+      const askPassword = (area, label, onOk) => {
+        area.innerHTML = `<form class="form inline-confirm" novalidate>${pwField("a-confirmpw", `Current password — ${label}`, "current-password")}
+          <div class="cta-row"><button class="btn secondary" type="submit">Confirm</button><button class="linkish" type="button" data-cancel>Cancel</button></div></form>`;
+        const f = area.querySelector("form");
+        area.querySelector("[data-cancel]").addEventListener("click", () => (area.innerHTML = ""));
+        area.querySelector("[data-toggle]").addEventListener("click", (e) => {
+          const i = document.getElementById("a-confirmpw"); i.type = i.type === "password" ? "text" : "password";
+          e.target.textContent = i.type === "password" ? "Show" : "Hide";
+        });
+        document.getElementById("a-confirmpw").focus();
+        f.addEventListener("submit", async (e) => {
+          e.preventDefault();
+          try { await onOk(document.getElementById("a-confirmpw").value); }
+          catch (err) { showMsg(msg(), err.message, true); }
+        });
+      };
+      const showCodes = (area, codes) => {
+        const text = `BankJobz recovery codes for ${d.email}\nEach works once, if you can't use your authenticator app.\n\n${codes.join("\n")}\n`;
+        area.innerHTML = `<div class="codes-box">
+          <p><b>Save these recovery codes now.</b> Each one works once if you lose your phone. They won't be shown again.</p>
+          <ol class="codes">${codes.map((c) => `<li><code>${esc(c)}</code></li>`).join("")}</ol>
+          <div class="cta-row"><button class="btn secondary" id="codes-dl" type="button">Download .txt</button><button class="linkish" id="codes-copy" type="button">Copy</button><button class="btn" id="codes-done" type="button">I've saved them</button></div></div>`;
+        document.getElementById("codes-dl").addEventListener("click", () => {
+          const url = URL.createObjectURL(new Blob([text], { type: "text/plain" }));
+          const a = Object.assign(document.createElement("a"), { href: url, download: "bankjobz-recovery-codes.txt" });
+          document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 5000);
+        });
+        document.getElementById("codes-copy").addEventListener("click", async (e) => {
+          try { await navigator.clipboard.writeText(text); e.target.textContent = "Copied"; } catch { e.target.textContent = "Select and copy the codes above"; }
+        });
+        document.getElementById("codes-done").addEventListener("click", () => drawSecurity());
+      };
+      const area = document.getElementById("sec-mfa-area");
+
+      document.getElementById("sec-totp-on")?.addEventListener("click", () => askPassword(area, "to set up an authenticator app", async (pw) => {
+          const r = await api("/api/employer/security/totp/start", { method: "POST", auth: true, body: JSON.stringify({ current_password: pw }) });
+          area.innerHTML = `<div class="totp-setup">
+            <div class="qr">${r.qr_svg}</div>
+            <ol>
+              <li>Open Microsoft Authenticator, Google Authenticator, 1Password or similar.</li>
+              <li>Add an account and scan this QR code. Can't scan? Enter this key: <code class="secret">${esc(r.secret.match(/.{1,4}/g).join(" "))}</code></li>
+              <li>Enter the 6-digit code it shows:</li>
+            </ol>
+            <form class="form" id="totp-confirm" novalidate>
+              <div class="field"><label for="totp-code">Code from the app</label><input id="totp-code" class="code-input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required></div>
+              <div class="cta-row"><button class="btn" type="submit">Turn on</button><button class="linkish" type="button" id="totp-cancel">Cancel</button></div>
+            </form></div>`;
+          document.getElementById("totp-cancel").addEventListener("click", () => drawSecurity());
+          document.getElementById("totp-code").focus();
+          document.getElementById("totp-confirm").addEventListener("submit", async (ev) => {
+            ev.preventDefault();
+            try {
+              const res = await api("/api/employer/security/totp/confirm", { method: "POST", auth: true,
+                body: JSON.stringify({ code: document.getElementById("totp-code").value.trim() }) });
+              d.account.mfa_method = "totp";
+              const block = area.closest(".sec-block");
+              block.querySelector("p").innerHTML = `<span class="status-pill">Authenticator app</span> Turned on. New devices will ask for a code from your app.`;
+              block.querySelector(".cta-row").remove();
+              showCodes(area, res.recovery_codes);
+            } catch (err) { showMsg(msg(), err.message, true); }
+          });
+      }));
+      document.getElementById("sec-newcodes")?.addEventListener("click", () => askPassword(area, "to make new recovery codes", async (pw) => {
+        const r = await api("/api/employer/security/recovery-codes", { method: "POST", auth: true, body: JSON.stringify({ current_password: pw }) });
+        showCodes(area, r.recovery_codes);
+      }));
+      document.getElementById("sec-totp-off")?.addEventListener("click", () => askPassword(area, "to turn off the app", async (pw) => {
+        await api("/api/employer/security/totp/disable", { method: "POST", auth: true, body: JSON.stringify({ current_password: pw }) });
+        d.account.mfa_method = "email";
+        await drawSecurity();
+        showMsg(msg(), "Authenticator turned off. Sign-in codes now come by email.", false);
+      }));
+      document.getElementById("sec-pw").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const cur = document.getElementById("a-curpw").value, next = document.getElementById("a-nextpw").value;
+        if (!cur || next.length < 10) return showMsg(msg(), "Enter your current password and a new one of at least 10 characters.", true);
+        try {
+          await api("/api/employer/security/password", { method: "POST", auth: true, body: JSON.stringify({ current_password: cur, new_password: next }) });
+          await drawSecurity();
+          showMsg(msg(), "Password changed. Your other devices were signed out.", false);
+        } catch (err) { showMsg(msg(), err.message, true); }
+      });
+      box.querySelectorAll("[data-revoke]").forEach((b) => b.addEventListener("click", async () => {
+        try { await api(`/api/employer/security/sessions/${b.dataset.revoke}/revoke`, { method: "POST", auth: true }); await drawSecurity(); }
+        catch (err) { showMsg(msg(), err.message, true); }
+      }));
+      document.getElementById("sec-revoke-all")?.addEventListener("click", async () => {
+        try { await api("/api/employer/security/sessions/revoke-others", { method: "POST", auth: true }); await drawSecurity(); showMsg(msg(), "Signed out everywhere else.", false); }
+        catch (err) { showMsg(msg(), err.message, true); }
+      });
+      document.getElementById("sec-forget")?.addEventListener("click", async () => {
+        try {
+          await api("/api/employer/security/devices/forget", { method: "POST", auth: true });
+          store.del("bankjobz.device");
+          await drawSecurity();
+          showMsg(msg(), "Trusted devices forgotten. Each will ask for a code next sign-in.", false);
+        } catch (err) { showMsg(msg(), err.message, true); }
+      });
+      document.getElementById("sec-notify").addEventListener("change", async (e) => {
+        try {
+          await api("/api/employer/security/notifications", { method: "POST", auth: true, body: JSON.stringify({ notify_each_applicant: e.target.checked }) });
+          showMsg(msg(), e.target.checked ? "You'll get an email for each applicant." : "Applicant emails off. They'll still appear in your dashboard.", false);
+        } catch (err) { e.target.checked = !e.target.checked; showMsg(msg(), err.message, true); }
+      });
+    }
+
+    renderTab();
   }
 
   async function viewEdit(id) {
@@ -1589,6 +2138,9 @@
     if (state.pendingFlash) { const [t, bad] = state.pendingFlash; state.pendingFlash = null; setTimeout(() => flash(t, bad), 0); }
     // A real /jobs/123 URL (served by the job page function) shows that job until another view is picked.
     const pathJob = location.pathname.match(/^\/jobs\/(\d+)\/?$/);
+    // An email button pasted into a tab that's already open arrives as a hash change.
+    const linkInHash = location.hash.match(/^#auth=(bsl_[0-9a-f]{48})$/)?.[1];
+    if (linkInHash) { state.authLink = { link: linkInHash }; history.replaceState(null, "", location.pathname + "#email-link"); }
     let h = location.hash.replace(/^#/, "");
     if (pathJob && h) history.replaceState(null, "", "/#" + h);
     if (!h) h = pathJob ? `job-${pathJob[1]}` : "home";
@@ -1605,6 +2157,7 @@
     else if (h === "jobs") viewJobs();
     else if (h === "post") viewPost();
     else if (h === "welcome") viewWelcome();
+    else if (h === "email-link") viewEmailLink();
     else if (h === "dashboard") viewDashboard();
     else if (h === "profile") viewProfile();
     else if (h === "matches") viewMatches();
@@ -1615,21 +2168,26 @@
     window.scrollTo(0, 0);
   }
 
-  // Links that arrive by email: ?login= (employer sign-in) and ?alerts= (job alert confirm/unsubscribe).
+  // Links that arrive by email: ?clogin= (candidate sign-in) and ?alerts= (job alert confirm/unsubscribe).
+  // Employers sign in with a password and a code, so an old emailed ?login= link just opens the sign-in page.
   async function handleEmailLinks() {
     const params = new URLSearchParams(location.search);
     const login = params.get("login");
     const clogin = params.get("clogin");
     const alerts = params.get("alerts");
+    // The button in a sign-in email: #auth=<secret>. (In the #fragment, so it never reaches a server log.)
+    const authLink = location.hash.match(/^#auth=(bsl_[0-9a-f]{48})$/)?.[1];
+    if (authLink) {
+      // Kept in memory only; the secret leaves the address bar (and history) right away.
+      state.authLink = { link: authLink };
+      history.replaceState(null, "", location.pathname + "#email-link");
+      return;
+    }
     if (!login && !clogin && !alerts) return;
     history.replaceState(null, "", location.pathname + location.hash);
     if (login) {
-      try {
-        const r = await api("/api/auth/verify", { method: "POST", body: JSON.stringify({ token: login }) });
-        store.set("bankstack.key", r.token);
-        if (!location.hash) history.replaceState(null, "", location.pathname + "#dashboard");
-        state.pendingFlash = [`Signed in as ${r.company}.`];
-      } catch (err) { state.pendingFlash = [err.message, true]; }
+      if (!location.hash) history.replaceState(null, "", location.pathname + "#dashboard");
+      state.pendingFlash = ["Sign-in links have been replaced by your email and password. If you haven't set a password yet, choose \u201cForgot or set password.\u201d"];
     }
     if (clogin) {
       try {

@@ -19,6 +19,7 @@ export async function startStack(dbName = "bankstack_e2e") {
     STRIPE_API_HOST: "localhost", STRIPE_API_PORT: String(STRIPE_PORT), STRIPE_API_PROTOCOL: "http",
     ADMIN_TOKEN: "admin_e2e_token", LOCAL_BLOBS_DIR: mkdtempSync(path.join(os.tmpdir(), "bankstack-blobs-")),
     FDIC_API_BASE: `http://localhost:${REGISTRY_PORT}`, NCUA_API_BASE: `http://localhost:${REGISTRY_PORT}`,
+    AUTH_MIN_MS: "150",
     ANTHROPIC_API_KEY: "sk-ant-test-browser", ANTHROPIC_API_BASE: `http://localhost:${AI_PORT}`,
   });
   delete process.env.RESEND_API_KEY;

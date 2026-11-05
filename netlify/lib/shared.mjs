@@ -52,8 +52,10 @@ export const json = (data, status = 200) =>
 
 export const fail = (message, status = 400) => json({ error: message }, status);
 
-export function siteUrl(req) {
-  return process.env.URL || new URL(req.url).origin;
+// Always the configured site (Netlify sets URL), never the Host a request claims: links in emails
+// built from a forged Host header would otherwise point at someone else's domain.
+export function siteUrl() {
+  return (process.env.URL || "https://bankjobz.com").replace(/\/+$/, "");
 }
 
 export const CATEGORIES = [
@@ -120,13 +122,25 @@ export function redirect(location, status = 303) {
   return new Response(null, { status, headers: { location } });
 }
 
-// Resolves the employer from "Authorization: Bearer <token>". Returns null when missing or unknown.
+// Resolves the signed-in employer from "Authorization: Bearer <session token>" (bss_…).
+// Sessions are created only by a full sign-in (password + second factor); they expire after
+// 30 days, or 14 days without use, and can be revoked. Returns the employer row plus
+// session_id, or null. (Same rules as netlify/lib/auth.mjs; kept here to avoid an import cycle.)
 export async function employerFromRequest(req) {
   const auth = req.headers.get("authorization") || "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!token) return null;
-  const rows = await db()`SELECT * FROM employers WHERE api_token = ${token} LIMIT 1`;
-  return rows[0] || null;
+  if (!token.startsWith("bss_")) return null;
+  const sql = db();
+  const [row] = await sql`
+    SELECT e.*, s.id AS session_id, s.last_seen_at AS session_last_seen
+    FROM employer_sessions s JOIN employers e ON e.id = s.employer_id
+    WHERE s.token_hash = ${sha256(token)} AND s.revoked_at IS NULL AND s.expires_at > now()
+      AND s.last_seen_at > now() - interval '14 days'`;
+  if (!row) return null;
+  if (Date.now() - new Date(row.session_last_seen).getTime() > 5 * 60 * 1000) {
+    await sql`UPDATE employer_sessions SET last_seen_at = now() WHERE id = ${row.session_id}`;
+  }
+  return row;
 }
 
 // Stripe moved current_period_end onto subscription items in newer API versions; read either.

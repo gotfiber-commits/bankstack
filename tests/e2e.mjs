@@ -18,6 +18,7 @@ Object.assign(process.env, {
   STRIPE_API_HOST: "localhost", STRIPE_API_PORT: String(STRIPE_PORT), STRIPE_API_PROTOCOL: "http",
   ADMIN_TOKEN: "admin_e2e_token", LOCAL_BLOBS_DIR: mkdtempSync(path.join(os.tmpdir(), "bankstack-blobs-")),
   FDIC_API_BASE: `http://localhost:${REGISTRY_PORT}`, NCUA_API_BASE: `http://localhost:${REGISTRY_PORT}`,
+  AUTH_MIN_MS: "150",
   ANTHROPIC_API_KEY: "sk-ant-test-e2e", ANTHROPIC_API_BASE: `http://localhost:${AI_PORT}`,
 });
 delete process.env.RESEND_API_KEY;
@@ -33,8 +34,9 @@ const section = (t) => results.push(`\n${t}`);
 const outbox = () => (globalThis.__outbox ||= []);
 const lastEmailTo = (to) => [...outbox()].reverse().find((m) => m.to === to);
 
-async function call(method, url, { body, token, form, raw } = {}) {
+async function call(method, url, { body, token, form, raw, ip } = {}) {
   const headers = {};
+  if (ip) headers["x-nf-client-connection-ip"] = ip; // Netlify sets this header itself in production
   if (token) headers.authorization = `Bearer ${token}`;
   let payload;
   if (form) payload = form;
@@ -63,7 +65,12 @@ const registries = await startFakeRegistries(REGISTRY_PORT);
 const fakeAi = await startFakeAnthropic(AI_PORT);
 const { server, routes } = await startLocalServer(PORT);
 const { db } = await import("../netlify/lib/shared.mjs");
-const { runAlertDigest, runLinkCheck } = await import("../netlify/lib/tasks.mjs");
+const { runAlertDigest, runLinkCheck, pruneAuth } = await import("../netlify/lib/tasks.mjs");
+const { totpAt, currentStep, emailTag } = await import("../netlify/lib/auth.mjs");
+// Every throttle counter for an email (per-IP and email-wide, passwords and codes).
+const clearThrottle = (email) => sql`DELETE FROM auth_throttle WHERE key LIKE ${"%" + emailTag(email) + "%"}`;
+const expireLocks = (email) => sql`UPDATE auth_throttle SET locked_until = now() - interval '1 minute' WHERE key LIKE ${"%" + emailTag(email) + "%"}`;
+const { sha256 } = await import("../netlify/lib/shared.mjs");
 const Stripe = (await import("stripe")).default;
 const stripeLib = new Stripe("sk_test_e2e");
 const sql = db();
@@ -136,37 +143,58 @@ try {
   check("unknown job returns 404", r.status === 404);
 
   // ================================================================
-  section("Employer accounts, then posting a job at $99/month");
-  // Creates an account the way a hiring manager does: sign up, click the emailed link.
+  section("Employer accounts: sign-up with password + emailed code");
+  const PW_A = "Shoals-Teller-Window-42";
+  const codeIn = (email) => lastEmailTo(email)?.subject.match(/(\d{6})$/)?.[1];
+  // Creates an account the way a hiring manager does: details + password, then the emailed code.
   const signUp = async (fields) => {
-    const res = await call("POST", "/api/auth/signup", { body: fields });
+    const res = await call("POST", "/api/auth/signup", { body: { password: PW_A, ...fields } });
     const email = fields.email.toLowerCase();
-    const token = lastEmailTo(email)?.text.match(/login=([a-f0-9]{48})/)?.[1];
-    const verified = token ? await call("POST", "/api/auth/verify", { body: { token } }) : null;
+    const verified = res.data?.challenge
+      ? await call("POST", "/api/auth/verify", { body: { challenge: res.data.challenge, code: codeIn(email) } }) : null;
     return { res, mail: lastEmailTo(email), key: verified?.data?.token };
   };
 
   r = await call("POST", "/api/checkout", { body: { ...jobFields, company: "Shoals Community Bank", email: "hr@shoalsbank.test" } });
-  check("posting without an account is refused", r.status === 401 && /account/i.test(r.data.error), r.data);
-  r = await call("POST", "/api/auth/signup", { body: { company: "Shoals Community Bank", email: "hr@shoalsbank.test" } });
+  check("posting without an account is refused", r.status === 401 && /sign/i.test(r.data.error), r.data);
+  r = await call("POST", "/api/auth/signup", { body: { company: "Shoals Community Bank", email: "hr@shoalsbank.test", password: PW_A } });
   check("sign-up needs the manager's name", r.status === 400 && /name/i.test(r.data.error));
+  for (const [pw, why] of [["short", "at least 10"], ["password123", "too common"], ["hrshoals-is-me", null]]) {
+    r = await call("POST", "/api/auth/signup", { body: { contact_name: "M", company: "S", email: "hrshoals@shoalsbank.test", password: pw } });
+    if (why) check(`weak password refused: "${pw}"`, r.status === 400 && r.data.error.includes(why), r.data);
+    else check("a password containing the email name is refused", r.status === 400 && /email/i.test(r.data.error), r.data);
+  }
+
   outbox().length = 0;
-  const shoalsAcct = await signUp({ contact_name: "Morgan Hale", contact_title: "HR Manager", company: "Shoals Community Bank",
-    email: "HR@shoalsbank.test", institution_type: "bank" });
-  check("sign-up emails a confirmation link", shoalsAcct.res.status === 200 && !!shoalsAcct.mail?.subject.includes("Confirm"), shoalsAcct.mail?.subject);
-  const keyA = shoalsAcct.key;
-  check("confirming the email opens the account", /^bsk_/.test(keyA || ""), keyA);
+  r = await call("POST", "/api/auth/signup", { body: { contact_name: "Morgan Hale", contact_title: "HR Manager",
+    company: "Shoals Community Bank", email: "HR@shoalsbank.test", institution_type: "bank", password: PW_A } });
+  const signupChallenge = r.data.challenge;
+  check("sign-up emails a 6-digit confirmation code", r.status === 200 && r.data.method === "email"
+    && /^bsc_/.test(signupChallenge) && /^\d{6}$/.test(codeIn("hr@shoalsbank.test") || ""), lastEmailTo("hr@shoalsbank.test")?.subject);
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A } });
+  check("an unconfirmed account is sent back to confirm its email", r.status === 200 && r.data.purpose === "verify" && r.data.method === "email");
+  const freshVerify = r.data.challenge;
+  r = await call("POST", "/api/auth/verify", { body: { challenge: freshVerify, code: "000000" } });
+  check("a wrong code is refused", r.status === 401);
+  r = await call("POST", "/api/auth/verify", { body: { challenge: freshVerify, code: codeIn("hr@shoalsbank.test"), remember_device: true } });
+  let keyA = r.data.token;
+  const deviceA = r.data.device_token;
+  check("the right code confirms the account and signs in", /^bss_/.test(keyA || "") && /^bsd_/.test(deviceA || ""), r.data);
+  r = await call("POST", "/api/auth/verify", { body: { challenge: freshVerify, code: codeIn("hr@shoalsbank.test") } });
+  check("a code can't be used twice", r.status === 401);
   r = await call("GET", "/api/employer", { token: keyA });
   check("new account has its own empty dashboard with the manager's details",
     r.status === 200 && r.data.jobs.length === 0 && r.data.account.contact_name === "Morgan Hale"
-    && r.data.account.contact_title === "HR Manager" && r.data.account.has_billing === false, r.data.account);
+    && r.data.account.contact_title === "HR Manager" && r.data.account.has_billing === false && r.data.account.mfa_method === "email", r.data.account);
 
   outbox().length = 0;
-  r = await call("POST", "/api/auth/signup", { body: { contact_name: "Impostor", company: "Impostor Bank", email: "hr@shoalsbank.test" } });
-  check("signing up again with a taken email just sends that inbox a sign-in link",
-    r.status === 200 && !!lastEmailTo("hr@shoalsbank.test")?.subject.includes("sign-in"));
+  r = await call("POST", "/api/auth/signup", { body: { contact_name: "Impostor", company: "Impostor Bank", email: "hr@shoalsbank.test", password: "Totally-New-Password-9" } });
+  check("signing up with a taken email looks normal but changes nothing",
+    r.status === 200 && /^bsc_/.test(r.data.challenge) && !!lastEmailTo("hr@shoalsbank.test")?.subject.includes("tried to create"));
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: "Totally-New-Password-9" } });
+  check("…the impostor's password doesn't work", r.status === 401);
   r = await call("GET", "/api/employer", { token: keyA });
-  check("…and can't overwrite the account", r.data.company === "Shoals Community Bank" && r.data.account.contact_name === "Morgan Hale");
+  check("…and the account is untouched", r.data.company === "Shoals Community Bank" && r.data.account.contact_name === "Morgan Hale");
 
   r = await call("PUT", "/api/employer/account", { token: keyA, body: { contact_name: "", company: "Shoals Community Bank" } });
   check("account edit requires a name", r.status === 400);
@@ -175,6 +203,337 @@ try {
   r = await call("GET", "/api/employer", { token: keyA });
   check("account edits save", r.data.account.contact_title === "VP, Human Resources" && r.data.account.phone === "256-555-0100");
 
+  // ================================================================
+  section("Attacks found in the security review stay fixed");
+  const attackPW = "Prairie-Vault-Lantern-8";
+  outbox().length = 0;
+  const victim = await signUp({ contact_name: "Pat Reyes", company: "Prairie State Bank", email: "pat@prairie.test", password: attackPW });
+  let keyV = victim.key;
+  check("a second test employer signs up", /^bss_/.test(keyV || ""));
+
+  // Parallel code guessing: still only 5 tries, and the right code can't be squeezed in afterwards.
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  const raceCh = r.data.challenge, raceCode = codeIn("pat@prairie.test");
+  await Promise.all(Array.from({ length: 30 }, (_, i) => call("POST", "/api/auth/verify", { body: { challenge: raceCh, code: String(200000 + i) } })));
+  const [{ attempts: raceAttempts }] = await sql`SELECT attempts FROM auth_challenges WHERE token_hash = ${sha256(raceCh)}`;
+  r = await call("POST", "/api/auth/verify", { body: { challenge: raceCh, code: raceCode } });
+  check("30 parallel guesses at a code are still capped at 5 tries", raceAttempts === 5 && r.status === 401, { raceAttempts, status: r.status });
+  check("…and every code try counts toward the email's code limit",
+    (await sql`SELECT failures FROM auth_throttle WHERE key LIKE ${"code:" + emailTag("pat@prairie.test") + ":%"}`)[0]?.failures >= 5);
+  await clearThrottle("pat@prairie.test");
+
+  // A correct code sent twice at once only makes one session.
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  const twinCh = r.data.challenge, twinCode = codeIn("pat@prairie.test");
+  const twins = await Promise.all([1, 2].map(() => call("POST", "/api/auth/verify", { body: { challenge: twinCh, code: twinCode } })));
+  check("one code used twice at the same moment signs in only once", twins.filter((x) => x.status === 200).length === 1, twins.map((x) => x.status));
+
+  // Parallel password guessing: every attempt is counted before it's checked, so a burst gets no extra tries.
+  await clearThrottle("pat@prairie.test");
+  const burst = await Promise.all(Array.from({ length: 40 }, (_, i) => call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: `Guess-number-${i}-x` } })));
+  const checked = burst.filter((x) => x.status === 401).length;
+  check("40 parallel wrong passwords: at most 8 are actually checked", checked <= 8 && burst.filter((x) => x.status === 429).length === 40 - checked, checked);
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  check("…and then even the right password is paused", r.status === 429, r.data);
+  // The owner can still reset with the emailed code while their password sign-in is paused.
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/forgot", { body: { email: "pat@prairie.test" } });
+  r = await call("POST", "/api/auth/reset", { body: { challenge: r.data.challenge, code: codeIn("pat@prairie.test"), password: attackPW + "x" } });
+  check("a correct reset code works even while password sign-in is paused", r.status === 200, r.data);
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW + "x" } });
+  check("…and the reset clears the pause for that device", r.status === 200 && !!r.data.challenge, r.data);
+  // Put the original password back (the reset signed every session out, so sign in fresh).
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/forgot", { body: { email: "pat@prairie.test" } });
+  await call("POST", "/api/auth/reset", { body: { challenge: r.data.challenge, code: codeIn("pat@prairie.test"), password: attackPW } });
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  r = await call("POST", "/api/auth/verify", { body: { challenge: r.data.challenge, code: codeIn("pat@prairie.test") } });
+  keyV = r.data.token;
+  check("…the original password goes back and signs in", /^bss_/.test(keyV || ""), r.data);
+  // Someone hammering from elsewhere doesn't lock the owner out of their own network.
+  await clearThrottle("pat@prairie.test");
+  for (let i = 0; i < 12; i++) await call("POST", "/api/auth/login", { ip: "203.0.113.9", body: { email: "pat@prairie.test", password: `Guess-number-${i}-y` } });
+  r = await call("POST", "/api/auth/login", { ip: "203.0.113.9", body: { email: "pat@prairie.test", password: attackPW } });
+  const ownerElsewhere = await call("POST", "/api/auth/login", { ip: "198.51.100.20", body: { email: "pat@prairie.test", password: attackPW } });
+  check("guessing from one network pauses that network only", r.status === 429 && ownerElsewhere.status === 200, [r.status, ownerElsewhere.status]);
+  // …but there's an email-wide ceiling across all networks.
+  await clearThrottle("pat@prairie.test");
+  for (let i = 0; i < 41; i++) await call("POST", "/api/auth/login", { ip: `203.0.113.${i + 1}`, body: { email: "pat@prairie.test", password: `Guess-number-${i}-z` } });
+  r = await call("POST", "/api/auth/login", { ip: "198.51.100.21", body: { email: "pat@prairie.test", password: attackPW } });
+  check("guesses spread over 41 networks hit the email-wide ceiling", r.status === 429, r.data);
+  await clearThrottle("pat@prairie.test");
+  for (let i = 0; i < 9; i++) await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: `Guess-number-${i}-x` } });
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  // The lock looks the same for an email with no account.
+  for (let i = 0; i < 8; i++) await call("POST", "/api/auth/login", { body: { email: "ghost@nowhere.test", password: `Guess-number-${i}-x` } });
+  const ghost = await call("POST", "/api/auth/login", { body: { email: "ghost@nowhere.test", password: "Anything-at-all-1" } });
+  check("an email with no account locks identically (no probing via lockouts)", ghost.status === 429 && ghost.data.error === r.data.error);
+  // After a lock expires, one more mistake doesn't instantly re-lock.
+  await expireLocks("pat@prairie.test");
+  await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: "One-more-mistake-1" } });
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  check("an expired lock starts the count fresh", r.status === 200 && !!r.data.challenge, r.data);
+  await clearThrottle("pat@prairie.test");
+
+  // ---- third review: lockouts can't be turned against the owner ----
+  const linkIn = (email) => (lastEmailTo(email)?.text || "").match(/#auth=(bsl_[0-9a-f]{48})/)?.[1];
+  // E: a client-supplied X-Forwarded-For doesn't buy extra guesses.
+  await clearThrottle("pat@prairie.test");
+  const spoofed = await Promise.all(Array.from({ length: 30 }, (_, i) => fetch(`${BASE}/api/auth/login`, {
+    method: "POST", headers: { "content-type": "application/json", "x-forwarded-for": `10.9.${i}.1` },
+    body: JSON.stringify({ email: "pat@prairie.test", password: `Spoof-guess-${i}-xx` }) })));
+  check("a forged X-Forwarded-For header gets no extra guesses", spoofed.filter((x) => x.status === 401).length <= 8,
+    spoofed.filter((x) => x.status === 401).length);
+  await clearThrottle("pat@prairie.test");
+
+  // F: successful sign-ins don't fill the email-wide counters.
+  for (let i = 0; i < 6; i++) {
+    const ok = await call("POST", "/api/auth/login", { ip: `198.51.100.${40 + i}`, body: { email: "pat@prairie.test", password: attackPW } });
+    if (ok.status !== 200) check(`successful sign-in ${i}`, false, ok.data);
+  }
+  const [pwall] = await sql`SELECT failures FROM auth_throttle WHERE key = ${"pwall:" + emailTag("pat@prairie.test")}`;
+  check("six successful sign-ins leave the email-wide count at zero", !pwall || pwall.failures === 0, pwall);
+
+  // B: an attacker on many networks maxes out every email-wide counter...
+  await clearThrottle("pat@prairie.test");
+  outbox().length = 0;
+  for (let n = 0; n < 6; n++) {
+    const ip = `203.0.114.${n + 1}`;
+    for (let i = 0; i < 8; i++) await call("POST", "/api/auth/login", { ip, body: { email: "pat@prairie.test", password: `Spread-guess-${n}-${i}` } });
+    for (let c = 0; c < 2; c++) {
+      const f = await call("POST", "/api/auth/forgot", { ip, body: { email: "pat@prairie.test" } });
+      for (let i = 0; i < 4; i++) await call("POST", "/api/auth/reset", { ip, body: { challenge: f.data.challenge, code: String(300000 + i), password: "Attacker-Pass-123" } });
+    }
+  }
+  const home = "198.51.100.77";
+  r = await call("POST", "/api/auth/login", { ip: home, body: { email: "pat@prairie.test", password: attackPW } });
+  check("…which pauses password sign-in on new devices", r.status === 429, r.data);
+  check("…and the owner is told by email", outbox().some((m) => m.to === "pat@prairie.test" && /many failed sign-in attempts/.test(m.subject)));
+  outbox().length = 0;
+  const ownerForgot = await call("POST", "/api/auth/forgot", { ip: home, body: { email: "pat@prairie.test" } });
+  r = await call("POST", "/api/auth/reset", { ip: home, body: { challenge: ownerForgot.data.challenge, code: codeIn("pat@prairie.test"), password: attackPW } });
+  check("…typing the emailed code is paused too, and says to use the email's button", r.status === 429 && /button in the email/.test(r.data.error), r.data);
+  const resetLink = linkIn("pat@prairie.test");
+  check("reset emails carry a one-click link", /^bsl_/.test(resetLink || ""));
+  r = await call("POST", "/api/auth/link", { ip: home, body: { link: resetLink, password: "short" } });
+  check("the link refuses a weak password without being used up", r.status === 400);
+  r = await call("POST", "/api/auth/link", { ip: home, body: { link: resetLink, password: attackPW } });
+  check("…but the owner's emailed link works straight through the lockout", r.status === 200 && r.data.reset === true, r.data);
+  r = await call("POST", "/api/auth/link", { ip: home, body: { link: resetLink, password: attackPW } });
+  check("…once only", r.status === 401);
+  r = await call("POST", "/api/auth/login", { ip: home, body: { email: "pat@prairie.test", password: attackPW } });
+  check("…and the reset lifts the password pause", r.status === 200 && !!r.data.challenge, r.data);
+  const signInLink = linkIn("pat@prairie.test");
+  check("sign-in emails carry a link too", /^bsl_/.test(signInLink || "") && signInLink !== resetLink);
+  r = await call("POST", "/api/auth/link", { ip: home, body: { link: signInLink } });
+  check("…which signs in on the device that opens it", /^bss_/.test(r.data.token || ""), r.data);
+  keyV = r.data.token;
+  r = await call("POST", "/api/auth/link", { body: { link: "bsl_" + "0".repeat(48) } });
+  check("a made-up link is refused", r.status === 401);
+
+  // A trusted device keeps working while the email-wide password counter is maxed out.
+  await clearThrottle("pat@prairie.test");
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  r = await call("POST", "/api/auth/verify", { body: { challenge: r.data.challenge, code: codeIn("pat@prairie.test"), remember_device: true } });
+  const patDevice = r.data.device_token;
+  for (let n = 0; n < 6; n++) for (let i = 0; i < 8; i++) {
+    await call("POST", "/api/auth/login", { ip: `203.0.115.${n + 1}`, body: { email: "pat@prairie.test", password: `Spread-guess-${n}-${i}` } });
+  }
+  r = await call("POST", "/api/auth/login", { ip: home, body: { email: "pat@prairie.test", password: attackPW } });
+  const onTrusted = await call("POST", "/api/auth/login", { ip: home, body: { email: "pat@prairie.test", password: attackPW, device_token: patDevice } });
+  check("with sign-in paused for new devices, the owner's trusted laptop still gets in",
+    r.status === 429 && /^bss_/.test(onTrusted.data.token || ""), [r.status, onTrusted.data]);
+  await clearThrottle("pat@prairie.test");
+
+  // A resent code replaces the old link.
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  const firstLink = linkIn("pat@prairie.test");
+  await sql`UPDATE auth_challenges SET last_sent_at = now() - interval '1 minute' WHERE token_hash = ${sha256(r.data.challenge)}`;
+  await call("POST", "/api/auth/resend", { body: { challenge: r.data.challenge } });
+  const secondLink = linkIn("pat@prairie.test");
+  const oldLink = await call("POST", "/api/auth/link", { body: { link: firstLink } });
+  const newLink = await call("POST", "/api/auth/link", { body: { link: secondLink } });
+  check("sending a new code retires the old link", oldLink.status === 401 && newLink.status === 200, [oldLink.status, newLink.status]);
+
+  // ---- fourth review: the email button can't be turned against the owner ----
+  r = await call("POST", "/api/auth/link/peek", { body: { link: "bsl_" + "1".repeat(48) } });
+  check("checking a made-up link reveals nothing", r.status === 401);
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  const peekLinkVal = linkIn("pat@prairie.test");
+  r = await call("POST", "/api/auth/link/peek", { body: { link: peekLinkVal } });
+  check("the page learns what a link is for, and whose it is, from the server", r.data.purpose === "login" && r.data.email === "pat@prairie.test", r.data);
+  check("links in emails always use the configured site and keep the secret in the #fragment",
+    lastEmailTo("pat@prairie.test").text.includes(`${BASE}/#auth=bsl_`));
+  const forged = await fetch(`${BASE}/api/auth/forgot`, { method: "POST", headers: { "content-type": "application/json", "x-forwarded-host": "evil.example" },
+    body: JSON.stringify({ email: "pat@prairie.test" }) });
+  await forged.json();
+  check("…even when a request names another host", !lastEmailTo("pat@prairie.test").text.includes("evil.example") && lastEmailTo("pat@prairie.test").text.includes(BASE));
+
+  // An impostor signs up with the owner's email mid-sign-up: the impostor's button can't be confirmed by the owner.
+  outbox().length = 0;
+  await call("POST", "/api/auth/signup", { body: { contact_name: "Real Rita", company: "Rita Savings", email: "rita@ritabank.test", password: "Copper-Kettle-Morning-4" } });
+  const ritaOwnLink = linkIn("rita@ritabank.test");
+  await call("POST", "/api/auth/signup", { body: { contact_name: "Mallory", company: "Mallory Fake Bank", email: "rita@ritabank.test", password: "Mallory-Pass-1234" } });
+  const malloryLink = linkIn("rita@ritabank.test");
+  r = await call("POST", "/api/auth/link/peek", { body: { link: malloryLink } });
+  check("a confirmation button shows the account it's for", r.data.purpose === "verify" && r.data.email === "rita@ritabank.test");
+  r = await call("POST", "/api/auth/link", { body: { link: malloryLink } });
+  check("a confirmation button needs the sign-up's password", r.status === 401);
+  r = await call("POST", "/api/auth/link", { body: { link: malloryLink, password: "Copper-Kettle-Morning-4" } });
+  check("the owner clicking the impostor's button (with her own password) is refused", r.status === 401 && /didn't sign up/.test(r.data.error), r.data);
+  r = await call("POST", "/api/auth/link", { body: { link: ritaOwnLink, password: "Copper-Kettle-Morning-4" } });
+  const ritaKey = r.data.token;
+  r = await call("GET", "/api/employer", { token: ritaKey });
+  check("her own button confirms her own details", r.data?.company === "Rita Savings" && r.data.account.contact_name === "Real Rita", r.data);
+  r = await call("POST", "/api/auth/link", { body: { link: malloryLink, password: "Mallory-Pass-1234" } });
+  check("…after which the impostor's button is dead, even with the impostor's password", r.status === 401 || r.status === 409);
+  r = await call("POST", "/api/auth/login", { body: { email: "rita@ritabank.test", password: "Mallory-Pass-1234" } });
+  check("…and the impostor's password doesn't sign in", r.status === 401);
+
+  // An attacker's leftover sign-up can't overwrite an account confirmed later through "forgot password".
+  outbox().length = 0;
+  const lurk = await call("POST", "/api/auth/signup", { body: { contact_name: "Mallory", company: "Mallory Fake Bank", email: "sam@sambank.test", password: "Mallory-Pass-1234" } });
+  r = await call("POST", "/api/auth/forgot", { body: { email: "sam@sambank.test" } });
+  r = await call("POST", "/api/auth/reset", { body: { challenge: r.data.challenge, code: codeIn("sam@sambank.test"), password: "Granite-Harbor-Sunrise-6" } });
+  check("the real owner confirms through 'forgot password'", r.status === 200);
+  await sql`UPDATE auth_challenges SET last_sent_at = now() - interval '1 minute' WHERE token_hash = ${sha256(lurk.data.challenge)}`;
+  outbox().length = 0;
+  await call("POST", "/api/auth/resend", { body: { challenge: lurk.data.challenge } });
+  check("the attacker can't revive their leftover sign-up email", !lastEmailTo("sam@sambank.test"));
+  const [{ live: liveCh }] = await sql`SELECT COUNT(*)::int live FROM auth_challenges c JOIN employers e ON e.id = c.employer_id
+                              WHERE e.email = 'sam@sambank.test' AND c.consumed_at IS NULL`;
+  check("…because a new password retires every outstanding code and link", liveCh === 0, liveCh);
+  r = await call("POST", "/api/auth/login", { body: { email: "sam@sambank.test", password: "Granite-Harbor-Sunrise-6" } });
+  check("…and the owner's password stands", r.status === 200 && !!r.data.challenge);
+
+  // A stolen trusted-device token gets its own small allowance, then stops being trusted.
+  await clearThrottle("pat@prairie.test");
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  r = await call("POST", "/api/auth/verify", { body: { challenge: r.data.challenge, code: codeIn("pat@prairie.test"), remember_device: true } });
+  const stolenDevice = r.data.device_token;
+  let devChecked = 0;
+  for (let n = 0; n < 4; n++) for (let i = 0; i < 6; i++) {
+    const g = await call("POST", "/api/auth/login", { ip: `203.0.116.${n + 1}`, body: { email: "pat@prairie.test", password: `Device-guess-${n}-${i}`, device_token: stolenDevice } });
+    if (g.status === 401) devChecked++;
+  }
+  const [{ n: devRows }] = await sql`SELECT COUNT(*)::int n FROM employer_devices WHERE token_hash = ${sha256(stolenDevice)}`;
+  const [pwallAfter] = await sql`SELECT failures FROM auth_throttle WHERE key = ${"pwall:" + emailTag("pat@prairie.test")}`;
+  check("a stolen device token stops being trusted after 10 wrong passwords", devRows === 0, devRows);
+  check("…so later guesses count toward the email-wide limit again", (pwallAfter?.failures || 0) >= devChecked - 10 && devChecked - 10 <= 40,
+    { devChecked, pwall: pwallAfter?.failures });
+  await clearThrottle("pat@prairie.test");
+  r = await call("POST", "/api/auth/login", { ip: "198.51.100.90", body: { email: "pat@prairie.test", password: attackPW, device_token: stolenDevice } });
+  check("…and that device is no longer trusted (it's asked for a code)", !r.data.token && r.data.method === "email", r.data);
+
+  // The owner's own right code on the attempt that reaches the limit doesn't raise a false alarm.
+  await clearThrottle("pat@prairie.test");
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  await sql`INSERT INTO auth_throttle (key, failures, updated_at) VALUES (${"codeall:" + emailTag("pat@prairie.test")}, 9, now())`;
+  r = await call("POST", "/api/auth/verify", { body: { challenge: r.data.challenge, code: codeIn("pat@prairie.test") } });
+  check("a right code landing on the limit signs in without a false alarm", /^bss_/.test(r.data.token || "")
+    && !outbox().some((m) => /many failed/.test(m.subject)), r.data);
+  await clearThrottle("pat@prairie.test");
+
+  // C: a wrong password takes the same time whether the email is unconfirmed (many sign-ups), confirmed or unknown.
+  for (let i = 0; i < 10; i++) await call("POST", "/api/auth/signup", { body: { contact_name: "Pend", company: "Pend Bank", email: "intake@pendbank.test", password: `Pending-Pass-${i}-abc` } });
+  const timeIt = async (email) => { const t = []; for (let i = 0; i < 3; i++) { const s0 = Date.now(); await call("POST", "/api/auth/login", { ip: `192.0.2.${i}`, body: { email, password: "Wrong-Password-xyz" } }); t.push(Date.now() - s0); } return t.sort((a, b) => a - b)[1]; };
+  const tPend = await timeIt("intake@pendbank.test"), tNone = await timeIt("nobody-at-all@none.test"), tReal = await timeIt("pat@prairie.test");
+  check("wrong-password timing matches for unconfirmed, confirmed and unknown emails",
+    Math.abs(tPend - tNone) < 60 && Math.abs(tReal - tNone) < 60, { tPend, tNone, tReal });
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/login", { body: { email: "intake@pendbank.test", password: "Pending-Pass-0-abc" } });
+  check("the oldest of ten pending sign-ups can still resume confirming", r.status === 200 && r.data.purpose === "verify", r.data);
+  await clearThrottle("pat@prairie.test");
+
+  // Decoys behave exactly like real challenges.
+  r = await call("POST", "/api/auth/signup", { body: { contact_name: "X", company: "X", email: "pat@prairie.test", password: "Some-Other-Pass-99" } });
+  const decoyCh = r.data.challenge;
+  r = await call("POST", "/api/auth/forgot", { body: { email: "pat@prairie.test" } });
+  const realResetCh = r.data.challenge;
+  const decoyVerify = await call("POST", "/api/auth/verify", { body: { challenge: decoyCh, code: "000000" } });
+  const realLogin = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  const realVerify = await call("POST", "/api/auth/verify", { body: { challenge: realLogin.data.challenge, code: "000000" } });
+  check("a decoy's wrong-code answer matches a real one word for word", decoyVerify.status === realVerify.status
+    && decoyVerify.data.error === realVerify.data.error, [decoyVerify.data, realVerify.data]);
+  const decoyResend = await call("POST", "/api/auth/resend", { body: { challenge: decoyCh } });
+  const realResend = await call("POST", "/api/auth/resend", { body: { challenge: realResetCh } });
+  check("…and so does 'send a new code' right away", decoyResend.status === 429 && realResend.status === 429);
+  r = await call("POST", "/api/auth/forgot", { body: { email: "nobody-here@nowhere.test" } });
+  const ghostReset = await call("POST", "/api/auth/reset", { body: { challenge: r.data.challenge, code: "123456", password: "Brand-New-Pass-123" } });
+  const realReset = await call("POST", "/api/auth/reset", { body: { challenge: realResetCh, code: "123456", password: "Brand-New-Pass-123" } });
+  check("reset with a wrong code answers the same for real and missing accounts",
+    ghostReset.status === realReset.status && ghostReset.data.error === realReset.data.error);
+  let t0 = Date.now();
+  await call("POST", "/api/auth/forgot", { body: { email: "nobody-else@nowhere.test" } });
+  const tGhost = Date.now() - t0;
+  check("forgot-password takes at least the fixed minimum time either way", tGhost >= 150, tGhost);
+  await clearThrottle("pat@prairie.test");
+
+  // Sign-up for an email that's mid-confirmation can't change it: only the entered code's details apply.
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/signup", { body: { contact_name: "Real Owner", company: "Owner Savings Bank", email: "owner@owner.test", password: "Harbor-Gate-Lantern-11" } });
+  const ownerCh = r.data.challenge, ownerCode = codeIn("owner@owner.test");
+  await call("POST", "/api/auth/signup", { body: { contact_name: "Mallory", company: "Mallory Fake Bank", email: "owner@owner.test", password: "Mallory-Pass-1234" } });
+  r = await call("POST", "/api/auth/verify", { body: { challenge: ownerCh, code: ownerCode } });
+  const keyOwner = r.data.token;
+  r = await call("GET", "/api/employer", { token: keyOwner });
+  check("an impostor sign-up mid-confirmation changes nothing", r.data.company === "Owner Savings Bank" && r.data.account.contact_name === "Real Owner", r.data.account);
+  r = await call("POST", "/api/auth/login", { body: { email: "owner@owner.test", password: "Mallory-Pass-1234" } });
+  check("…the impostor's password doesn't work", r.status === 401);
+  r = await call("POST", "/api/auth/login", { body: { email: "owner@owner.test", password: "Harbor-Gate-Lantern-11" } });
+  check("…the owner's does", r.status === 200 && !!r.data.challenge);
+
+  // Signed up, never entered the code, came back later: the sign-up password resumes confirmation.
+  outbox().length = 0;
+  await call("POST", "/api/auth/signup", { body: { contact_name: "Late Larry", company: "Late Bank", email: "late@late.test", password: "Quiet-River-Stone-77" } });
+  r = await call("POST", "/api/auth/login", { body: { email: "late@late.test", password: "Quiet-River-Stone-77" } });
+  check("an unconfirmed sign-up can sign in to finish confirming", r.status === 200 && r.data.purpose === "verify", r.data);
+  r = await call("POST", "/api/auth/verify", { body: { challenge: r.data.challenge, code: codeIn("late@late.test") } });
+  check("…and the new code completes it", /^bss_/.test(r.data.token || ""), r.data);
+
+  // A stolen session can't add its own authenticator app, and two app sign-ins can't share a code.
+  r = await call("POST", "/api/employer/security/totp/start", { token: keyV, body: {} });
+  check("a session alone can't start authenticator setup", r.status === 401);
+  r = await call("POST", "/api/employer/security/totp/start", { token: keyV, body: { current_password: attackPW } });
+  const vSecret = r.data.secret;
+  r = await call("POST", "/api/employer/security/totp/confirm", { token: keyV, body: { code: totpAt(vSecret, currentStep()) } });
+  r = await call("POST", "/api/employer/security/totp/start", { token: keyV, body: { current_password: attackPW } });
+  check("an app that's on can't be silently replaced", r.status === 409);
+  const twoCh = await Promise.all([1, 2].map(() => call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } })));
+  const sameCode = totpAt(vSecret, currentStep() + 1);
+  const pair = await Promise.all(twoCh.map((x) => call("POST", "/api/auth/verify", { body: { challenge: x.data.challenge, code: sameCode } })));
+  check("one app code sent to two sign-ins at once works only once", pair.filter((x) => x.status === 200).length === 1, pair.map((x) => x.status));
+  await clearThrottle("pat@prairie.test");
+
+  // Guessing the current password from inside a session counts toward the lock.
+  for (let i = 0; i < 8; i++) await call("POST", "/api/employer/security/recovery-codes", { token: keyV, body: { current_password: `nope-${i}` } });
+  r = await call("POST", "/api/employer/security/recovery-codes", { token: keyV, body: { current_password: attackPW } });
+  check("8 wrong current-password guesses lock even a signed-in session", r.status === 429);
+  await clearThrottle("pat@prairie.test");
+  const settingsBurst = await Promise.all(Array.from({ length: 20 }, (_, i) => call("POST", "/api/employer/security/recovery-codes", { token: keyV, body: { current_password: `nope-${i}` } })));
+  check("…and a parallel burst there gets at most 8 checks too", settingsBurst.filter((x) => x.status === 401).length <= 8);
+  await clearThrottle("pat@prairie.test");
+
+  // Changing the password forgets trusted devices.
+  await call("POST", "/api/employer/security/totp/disable", { token: keyV, body: { current_password: attackPW } });
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
+  r = await call("POST", "/api/auth/verify", { body: { challenge: r.data.challenge, code: codeIn("pat@prairie.test"), remember_device: true } });
+  const vDevice = r.data.device_token;
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW, device_token: vDevice } });
+  check("a trusted device skips the code…", !!r.data.token);
+  await call("POST", "/api/employer/security/password", { token: keyV, body: { current_password: attackPW, new_password: "Prairie-Vault-Lantern-9" } });
+  r = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: "Prairie-Vault-Lantern-9", device_token: vDevice } });
+  check("…until the password changes; then it asks for a code again", !r.data.token && r.data.method === "email", r.data);
+
+  // ================================================================
+  section("Posting a job at $99/month");
   r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "" } });
   check("missing title is rejected", r.status === 400 && /title/i.test(r.data.error), r.data);
   r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, salary_min: 200000, salary_max: 100000 } });
@@ -196,7 +555,7 @@ try {
   check("employer gets a 'posting is live' email", !!lastEmailTo("hr@shoalsbank.test")?.subject.includes("live"));
 
   r = await call("GET", `/api/session?session_id=${sessA.id}`);
-  check("returning from Stripe keeps the same account", r.status === 200 && r.data.token === keyA && r.data.job?.status === "open", r.data);
+  check("returning from Stripe confirms the posting without handing out credentials", r.status === 200 && !("token" in r.data) && r.data.job?.status === "open", r.data);
   r = await call("GET", "/api/jobs");
   check("direct posting is listed first", r.data.jobs[0].id === jobA && r.data.jobs.length === SEED_LEN + 1);
   r = await call("GET", "/api/employer", { token: keyA });
@@ -206,17 +565,146 @@ try {
   check("webhook without a valid signature is rejected", r.status === 400);
 
   // ================================================================
-  section("Signing in by email");
+  section("Signing in: password, then a second factor");
+  r = await call("POST", "/api/auth/login", { body: { email: "nobody@nowhere.test", password: PW_A } });
+  const unknownMsg = r.data.error;
+  check("unknown email is refused", r.status === 401);
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: "Wrong-Password-123" } });
+  check("…with the same message as a wrong password (no account probing)", r.status === 401 && r.data.error === unknownMsg);
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A, device_token: deviceA } });
+  check("a trusted device signs straight in", r.status === 200 && /^bss_/.test(r.data.token || ""), r.data);
   outbox().length = 0;
-  r = await call("POST", "/api/auth/request", { body: { email: "nobody@nowhere.test" } });
-  check("unknown email still answers ok (no account probing)", r.status === 200 && outbox().length === 0);
-  r = await call("POST", "/api/auth/request", { body: { email: "hr@shoalsbank.test" } });
-  const link = lastEmailTo("hr@shoalsbank.test")?.text.match(/login=([a-f0-9]{48})/)?.[1];
-  check("sign-in link is emailed", r.status === 200 && !!link);
-  r = await call("POST", "/api/auth/verify", { body: { token: link } });
-  check("link returns the same posting key", r.status === 200 && r.data.token === keyA);
-  r = await call("POST", "/api/auth/verify", { body: { token: link } });
-  check("link can't be used twice", r.status === 401);
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A } });
+  check("a new device needs a code, sent by email", r.status === 200 && r.data.method === "email" && /^\d{6}$/.test(codeIn("hr@shoalsbank.test") || ""));
+  const loginCh = r.data.challenge;
+  r = await call("POST", "/api/auth/resend", { body: { challenge: loginCh } });
+  check("resending right away is throttled", r.status === 429);
+  r = await call("POST", "/api/auth/verify", { body: { challenge: loginCh, code: codeIn("hr@shoalsbank.test") } });
+  const keyA2 = r.data.token;
+  check("password + code signs in", /^bss_/.test(keyA2 || "") && keyA2 !== keyA && !r.data.device_token);
+
+  // Guessing codes: five strikes and the code is dead.
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A } });
+  const guessCh = r.data.challenge;
+  for (let i = 0; i < 5; i++) await call("POST", "/api/auth/verify", { body: { challenge: guessCh, code: String(100000 + i) } });
+  r = await call("POST", "/api/auth/verify", { body: { challenge: guessCh, code: codeIn("hr@shoalsbank.test") } });
+  check("after 5 wrong codes even the right one is refused", r.status === 401);
+
+  // Guessing passwords: a temporary lock.
+  const [{ id: shoalsEmpId }] = await sql`SELECT id FROM employers WHERE email = 'hr@shoalsbank.test'`;
+  for (let i = 0; i < 8; i++) await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: `Nope-guess-${i}-xx` } });
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A } });
+  check("8 wrong passwords pause sign-in, even with the right one", r.status === 429 && /paused/.test(r.data.error), r.data);
+  await expireLocks("hr@shoalsbank.test");
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A, device_token: deviceA } });
+  check("once the pause ends, the right password works and clears the count", r.status === 200
+    && (await sql`SELECT COUNT(*)::int n FROM auth_throttle WHERE key LIKE ${"pw:" + emailTag("hr@shoalsbank.test") + ":%"}`)[0].n === 0);
+
+  r = await call("GET", "/api/employer", { token: "bsk_" + "a".repeat(48) });
+  check("old-style posting keys no longer work", r.status === 401);
+  r = await call("POST", "/api/auth/logout", { token: keyA2 });
+  r = await call("GET", "/api/employer", { token: keyA2 });
+  check("signing out ends that session", r.status === 401);
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("…without touching the others", r.status === 200);
+  await sql`UPDATE employer_sessions SET last_seen_at = now() - interval '15 days' WHERE token_hash = ${sha256(keyA)}`;
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("a session idle for 15 days expires", r.status === 401);
+  await sql`UPDATE employer_sessions SET last_seen_at = now(), revoked_at = NULL WHERE token_hash = ${sha256(keyA)}`;
+
+  await sql`UPDATE auth_challenges SET expires_at = now() - interval '2 days' WHERE consumed_at IS NOT NULL`;
+  const live = (await sql`SELECT COUNT(*)::int n FROM employer_sessions WHERE revoked_at IS NULL AND expires_at > now()`)[0].n;
+  r = await pruneAuth();
+  check("daily housekeeping clears used codes but keeps live sessions", r.challenges > 0
+    && (await sql`SELECT COUNT(*)::int n FROM employer_sessions WHERE revoked_at IS NULL AND expires_at > now()`)[0].n === live, r);
+
+  // ================================================================
+  section("Authenticator app, recovery codes and security settings");
+  r = await call("GET", "/api/employer/security", { token: keyA });
+  check("security page lists this session as current", r.status === 200 && r.data.mfa_method === "email"
+    && r.data.sessions.some((x) => x.current) && r.data.trusted_devices >= 1, r.data);
+  r = await call("POST", "/api/employer/security/totp/start", { token: keyA });
+  check("setting up an authenticator app needs the current password", r.status === 401);
+  r = await call("POST", "/api/employer/security/totp/start", { token: keyA, body: { current_password: PW_A } });
+  const totpSecret = r.data.secret;
+  check("authenticator setup returns a QR code and secret", /^[A-Z2-7]{32}$/.test(totpSecret || "")
+    && r.data.qr_svg?.startsWith("<svg") && r.data.otpauth.includes("issuer=BankJobz"), r.data.otpauth);
+  r = await call("POST", "/api/employer/security/totp/confirm", { token: keyA, body: { code: "123456" } });
+  check("a wrong app code doesn't turn it on", r.status === 400);
+  r = await call("POST", "/api/employer/security/totp/confirm", { token: keyA, body: { code: totpAt(totpSecret, currentStep()) } });
+  const recovery = r.data.recovery_codes || [];
+  check("the right app code turns it on and returns 10 recovery codes", r.status === 200 && recovery.length === 10
+    && recovery.every((c) => /^[0-9a-f]{5}-[0-9a-f]{5}$/.test(c)), r.data);
+  check("…and the owner is emailed a security notice", !!lastEmailTo("hr@shoalsbank.test")?.subject.includes("security notice"));
+
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A } });
+  check("now sign-in asks for the app code, and emails nothing", r.data.method === "totp" && outbox().length === 0, r.data);
+  const appCh = r.data.challenge;
+  r = await call("POST", "/api/auth/verify", { body: { challenge: appCh, code: totpAt(totpSecret, currentStep()) } });
+  check("the app code was already used to set up, so it's refused as a replay", r.status === 401);
+  r = await call("POST", "/api/auth/verify", { body: { challenge: appCh, code: totpAt(totpSecret, currentStep() + 1) } });
+  check("the next app code signs in (30-second clock drift allowed)", r.status === 200 && /^bss_/.test(r.data.token || ""), r.data);
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A } });
+  r = await call("POST", "/api/auth/verify", { body: { challenge: r.data.challenge, code: recovery[0].toUpperCase() } });
+  check("a recovery code works once (any case)", r.status === 200, r.data);
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A } });
+  r = await call("POST", "/api/auth/verify", { body: { challenge: r.data.challenge, code: recovery[0] } });
+  check("…and never again", r.status === 401);
+  r = await call("GET", "/api/employer/security", { token: keyA });
+  check("security page shows 9 recovery codes left", r.data.mfa_method === "totp" && r.data.recovery_codes_left === 9);
+
+  r = await call("POST", "/api/employer/security/recovery-codes", { token: keyA, body: { current_password: "nope" } });
+  check("new recovery codes need the current password", r.status === 401);
+  r = await call("POST", "/api/employer/security/recovery-codes", { token: keyA, body: { current_password: PW_A } });
+  check("…and replace the old set", r.data.recovery_codes?.length === 10 && !r.data.recovery_codes.includes(recovery[1]));
+
+  r = await call("GET", "/api/employer/security", { token: keyA });
+  const otherSession = r.data.sessions.find((x) => !x.current);
+  r = await call("POST", `/api/employer/security/sessions/${otherSession.id}/revoke`, { token: keyA });
+  r = await call("GET", "/api/employer/security", { token: keyA });
+  check("one other session can be signed out", r.data.sessions.every((x) => String(x.id) !== String(otherSession.id)));
+  r = await call("POST", "/api/employer/security/sessions/revoke-others", { token: keyA });
+  r = await call("GET", "/api/employer/security", { token: keyA });
+  check("'sign out everywhere else' leaves only this session", r.data.sessions.length === 1 && r.data.sessions[0].current);
+  r = await call("POST", "/api/employer/security/devices/forget", { token: keyA });
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A, device_token: deviceA } });
+  check("forgotten devices have to pass the second factor again", r.data.method === "totp" && !r.data.token);
+
+  r = await call("POST", "/api/employer/security/totp/disable", { token: keyA, body: { current_password: PW_A } });
+  r = await call("GET", "/api/employer/security", { token: keyA });
+  check("turning the app off falls back to email codes", r.data.mfa_method === "email" && r.data.recovery_codes_left === 0);
+
+  r = await call("POST", "/api/employer/security/password", { token: keyA, body: { current_password: "wrong", new_password: "Another-Strong-Pass-77" } });
+  check("password change needs the current password", r.status === 401);
+  r = await call("POST", "/api/employer/security/password", { token: keyA, body: { current_password: PW_A, new_password: "short" } });
+  check("…and a strong new one", r.status === 400);
+  const PW_A_NEW = "Another-Strong-Pass-77";
+  r = await call("POST", "/api/employer/security/password", { token: keyA, body: { current_password: PW_A, new_password: PW_A_NEW } });
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A } });
+  check("after a change the old password stops working", r.status === 401);
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("…and this session stays signed in", r.status === 200);
+
+  // Forgot password: emailed code, then a new password. Also how pre-update accounts set one.
+  outbox().length = 0;
+  r = await call("POST", "/api/auth/forgot", { body: { email: "nobody@nowhere.test" } });
+  check("forgot-password for an unknown email looks the same and sends nothing", r.status === 200 && /^bsc_/.test(r.data.challenge) && outbox().length === 0);
+  r = await call("POST", "/api/auth/forgot", { body: { email: "hr@shoalsbank.test" } });
+  const resetCh = r.data.challenge;
+  const resetCode = codeIn("hr@shoalsbank.test");
+  check("a reset code is emailed", /^\d{6}$/.test(resetCode || ""));
+  r = await call("POST", "/api/auth/reset", { body: { challenge: resetCh, code: resetCode, password: "weak" } });
+  check("reset still requires a strong password", r.status === 400);
+  const PW_A_RESET = "Reset-Branch-Vault-2026";
+  r = await call("POST", "/api/auth/reset", { body: { challenge: resetCh, code: resetCode, password: PW_A_RESET } });
+  check("reset sets the new password", r.status === 200);
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("…and signs out every session, for safety", r.status === 401);
+  r = await call("POST", "/api/auth/login", { body: { email: "hr@shoalsbank.test", password: PW_A_RESET } });
+  r = await call("POST", "/api/auth/verify", { body: { challenge: r.data.challenge, code: codeIn("hr@shoalsbank.test") } });
+  keyA = r.data.token;
+  check("then the new password + code signs in", /^bss_/.test(keyA || ""));
 
   // ================================================================
   section("SEO and sharing");
@@ -287,6 +775,33 @@ try {
   check("unknown stage is rejected", r.status === 400);
   r = await call("GET", "/api/employer", { token: keyA });
   check("stage is saved", r.data.applications[0].status === "interview" && r.data.jobs[0].new_applications === 0);
+  check("overview counts views, applicants and the pipeline", r.data.jobs[0].views >= 1 && r.data.stats.applicants === 1
+    && r.data.stats.live_postings === 1 && r.data.stats.monthly_cents === 9900 && r.data.pipeline.interview === 1
+    && r.data.stats.views === r.data.jobs[0].views, { stats: r.data.stats, pipeline: r.data.pipeline });
+  const viewsBefore = r.data.jobs[0].views;
+  await call("GET", `/api/jobs/${jobA}`);
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("each job-page view is counted", r.data.jobs[0].views === viewsBefore + 1);
+
+  r = await call("POST", `/api/employer/applications/${appRow.id}/notes`, { token: keyA, body: { notes: "Strong SQL; ask about =SUM leadership", rating: 4 } });
+  check("private notes and a rating save", r.status === 200);
+  r = await call("POST", `/api/employer/applications/${appRow.id}/notes`, { token: keyA, body: { notes: "x", rating: 9 } });
+  check("ratings outside 1-5 are refused", r.status === 400);
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("notes and rating come back on the applicant", r.data.applications[0].notes.startsWith("Strong SQL") && r.data.applications[0].rating === 4);
+
+  r = await call("GET", "/api/employer/applications.csv?status=interview", { token: keyA, raw: true });
+  const csv = await r.text();
+  check("applicants export as CSV, filtered by stage", r.status === 200 && r.headers.get("content-type").includes("text/csv")
+    && csv.includes("Dana Whitfield") && csv.includes(",interview,4,") && csv.split("\r\n").filter(Boolean).length === 2, csv.slice(0, 300));
+  r = await call("GET", "/api/employer/applications.csv?status=offer", { token: keyA, raw: true });
+  check("…an empty filter gives just the header row", (await r.text()).split("\r\n").filter(Boolean).length === 1);
+  await call("POST", `/api/employer/applications/${appRow.id}/notes`, { token: keyA, body: { notes: "=HYPERLINK(\"http://evil\")", rating: 4 } });
+  r = await call("GET", "/api/employer/applications.csv", { token: keyA, raw: true });
+  check("the export defuses spreadsheet formulas", (await r.text()).includes("'=HYPERLINK"));
+  await call("POST", `/api/employer/applications/${appRow.id}/notes`, { token: keyA, body: { notes: "Strong SQL", rating: 4 } });
+  r = await call("GET", "/api/employer/applications.csv", { raw: true });
+  check("the export needs a signed-in employer", r.status === 401);
 
   r = await call("GET", `/api/employer/jobs/${jobA}`, { token: keyA });
   check("edit form loads the posting", r.data.title === "Senior Data Architect" && !("stripe_subscription_id" in r.data));
@@ -316,7 +831,7 @@ try {
   r = await call("POST", "/api/checkout", { token: keyB, body: { ...jobFields, title: "Mortgage Loan Officer", category: "lending-credit" } });
   const jobB = r.data.job_id;
   await pay(lastSession());
-  check("second employer is set up", /^bsk_/.test(keyB) && keyB !== keyA);
+  check("second employer is set up", /^bss_/.test(keyB) && keyB !== keyA);
   r = await call("GET", `/api/employer/applications/${appRow.id}/resume`, { token: keyB });
   check("employer B can't download A's applicant résumé", r.status === 404);
   r = await call("PUT", `/api/employer/jobs/${jobA}`, { token: keyB, body: jobFields });
@@ -325,6 +840,26 @@ try {
   check("employer B sees only their own postings", r.data.jobs.length === 1 && r.data.jobs[0].id === jobB && r.data.applications.length === 0);
   r = await call("GET", "/api/employer", { token: "bsk_wrong" });
   check("a wrong key is refused", r.status === 401);
+  r = await call("POST", `/api/employer/applications/${appRow.id}/notes`, { token: keyB, body: { notes: "snooping", rating: 1 } });
+  check("employer B can't write notes on A's applicant", r.status === 404);
+  r = await call("GET", "/api/employer/applications.csv", { token: keyB, raw: true });
+  check("employer B's export holds none of A's applicants", !(await r.text()).includes("Dana Whitfield"));
+  r = await call("GET", "/api/employer/security", { token: keyA });
+  const aSession = r.data.sessions[0].id;
+  r = await call("POST", `/api/employer/security/sessions/${aSession}/revoke`, { token: keyB });
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("employer B can't sign out A's sessions", r.status === 200);
+
+  // Applicant emails can be turned off; applicants still land in the dashboard.
+  r = await call("POST", "/api/employer/security/notifications", { token: keyB, body: { notify_each_applicant: false } });
+  outbox().length = 0;
+  const quietForm = new FormData();
+  Object.entries({ job_id: jobB, name: "Quiet Applicant", email: "quiet@example.test" }).forEach(([k, v]) => quietForm.append(k, String(v)));
+  r = await call("POST", "/api/apply", { form: quietForm });
+  check("with emails off, the employer isn't emailed per applicant", r.status === 200 && !outbox().some((m) => m.to === "jobs@tvcu.test"));
+  r = await call("GET", "/api/employer", { token: keyB });
+  check("…but the applicant is in their dashboard", r.data.applications.some((a) => a.name === "Quiet Applicant"));
+  await call("POST", "/api/employer/security/notifications", { token: keyB, body: { notify_each_applicant: true } });
 
   // ================================================================
   section("Renewals and cancellation");
@@ -609,7 +1144,8 @@ try {
   check("admin needs the admin key", r.status === 401);
   r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
   check("admin figures: live paid postings and monthly revenue",
-    r.status === 200 && r.data.paid_live === 3 && r.data.mrr_cents === 3 * 9900 && r.data.unpaid === 1 && r.data.employer_count === 2, {
+    r.status === 200 && r.data.paid_live === 3 && r.data.mrr_cents === 3 * 9900 && r.data.unpaid === 1
+    && r.data.employer_count === (await sql`SELECT COUNT(*)::int n FROM employers WHERE verified_at IS NOT NULL`)[0].n, {
       paid_live: r.data.paid_live, mrr: r.data.mrr_cents, unpaid: r.data.unpaid, employers: r.data.employer_count });
   r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
     ...jobFields, title: "BSA Analyst", category: "risk-compliance", company: "Gone Bank", source_url: `${BASE}/no-such-posting`, source_name: "Test" } });

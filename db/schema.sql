@@ -183,6 +183,81 @@ ALTER TABLE employers ADD COLUMN IF NOT EXISTS phone         TEXT;
 ALTER TABLE employers ADD COLUMN IF NOT EXISTS verified_at   TIMESTAMPTZ;
 UPDATE employers SET verified_at = created_at WHERE verified_at IS NULL AND api_token IS NOT NULL;
 
+-- Employer sign-in (Nov 2026): password + second factor (email code or authenticator app),
+-- revocable sessions, trusted devices, recovery codes and lockout. Replaces emailed sign-in links.
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS password_hash         TEXT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS password_changed_at   TIMESTAMPTZ;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS mfa_method            TEXT NOT NULL DEFAULT 'email';
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS totp_secret           TEXT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS totp_pending_secret   TEXT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS totp_last_step        BIGINT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS recovery_codes        TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS failed_logins         INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS locked_until          TIMESTAMPTZ;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS notify_each_applicant BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE employers DROP CONSTRAINT IF EXISTS employers_mfa_method_check;
+ALTER TABLE employers ADD CONSTRAINT employers_mfa_method_check CHECK (mfa_method IN ('email', 'totp'));
+
+CREATE TABLE IF NOT EXISTS employer_sessions (
+  id           BIGSERIAL PRIMARY KEY,
+  employer_id  BIGINT NOT NULL REFERENCES employers(id) ON DELETE CASCADE,
+  token_hash   TEXT NOT NULL UNIQUE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at   TIMESTAMPTZ NOT NULL,
+  user_agent   TEXT,
+  ip           TEXT,
+  revoked_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS employer_sessions_employer_idx ON employer_sessions (employer_id);
+
+CREATE TABLE IF NOT EXISTS employer_devices (
+  id          BIGSERIAL PRIMARY KEY,
+  employer_id BIGINT NOT NULL REFERENCES employers(id) ON DELETE CASCADE,
+  token_hash  TEXT NOT NULL UNIQUE,
+  user_agent  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at  TIMESTAMPTZ NOT NULL
+);
+CREATE INDEX IF NOT EXISTS employer_devices_employer_idx ON employer_devices (employer_id);
+
+CREATE TABLE IF NOT EXISTS auth_challenges (
+  id           BIGSERIAL PRIMARY KEY,
+  token_hash   TEXT NOT NULL UNIQUE,
+  employer_id  BIGINT REFERENCES employers(id) ON DELETE CASCADE,
+  purpose      TEXT NOT NULL,          -- verify | login | reset
+  method       TEXT NOT NULL,          -- email | totp
+  code_hash    TEXT,
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  sends        INTEGER NOT NULL DEFAULT 0,
+  last_sent_at TIMESTAMPTZ,
+  expires_at   TIMESTAMPTZ NOT NULL,
+  consumed_at  TIMESTAMPTZ,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Challenges remember which sign-in throttle they count against, and (for sign-ups) the
+-- details to apply only once the emailed code proves the inbox. Decoy challenges, used when an
+-- email has no account, have no employer_id but behave identically.
+ALTER TABLE auth_challenges ADD COLUMN IF NOT EXISTS throttle_key TEXT;
+ALTER TABLE auth_challenges ADD COLUMN IF NOT EXISTS pending      JSONB;
+
+-- Failed passwords and codes, counted per email (hashed) whether or not an account exists,
+-- so lockouts can't be used to discover accounts. Updated atomically.
+CREATE TABLE IF NOT EXISTS auth_throttle (
+  key          TEXT PRIMARY KEY,
+  failures     INTEGER NOT NULL DEFAULT 0,
+  locked_until TIMESTAMPTZ,
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Hiring dashboard (Nov 2026): job page views, private applicant notes and ratings.
+ALTER TABLE jobs         ADD COLUMN IF NOT EXISTS views  INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS notes  TEXT;
+ALTER TABLE applications ADD COLUMN IF NOT EXISTS rating SMALLINT;
+ALTER TABLE applications DROP CONSTRAINT IF EXISTS applications_rating_check;
+ALTER TABLE applications ADD CONSTRAINT applications_rating_check CHECK (rating IS NULL OR rating BETWEEN 1 AND 5);
+
 -- AI writing assistant (Nov 2026): per-user daily usage log, for rate limiting.
 CREATE TABLE IF NOT EXISTS ai_usage (
   id         BIGSERIAL PRIMARY KEY,
@@ -201,3 +276,9 @@ CREATE TABLE IF NOT EXISTS saved_jobs (
   UNIQUE (candidate_id, job_id)
 );
 CREATE INDEX IF NOT EXISTS saved_jobs_candidate_idx ON saved_jobs (candidate_id);
+
+-- Emailed codes also carry a one-click link (stored hashed) that works even while code limits are hit.
+ALTER TABLE auth_challenges ADD COLUMN IF NOT EXISTS link_hash TEXT;
+CREATE INDEX IF NOT EXISTS auth_challenges_link_idx ON auth_challenges (link_hash) WHERE link_hash IS NOT NULL;
+-- One salt per account for unconfirmed sign-up passwords, so sign-in always does the same work.
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS pending_salt TEXT;

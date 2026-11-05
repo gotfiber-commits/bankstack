@@ -156,7 +156,8 @@ export default async (req) => {
     const jobId = String(b.job_id || "");
     if (!/^\d+$/.test(jobId)) return fail("Pick a job to apply for.");
     const [job] = await sql`
-      SELECT j.id, j.title, j.company, j.employer_id, j.apply_url, e.email AS employer_email
+      SELECT j.id, j.title, j.company, j.employer_id, j.apply_url, e.email AS employer_email,
+             COALESCE(e.notify_each_applicant, true) AS notify_employer
       FROM jobs j LEFT JOIN employers e ON e.id = j.employer_id
       WHERE j.id = ${jobId} AND j.status = 'open' AND j.expires_at > now()`;
     if (!job) return fail("This job is no longer open.", 404);
@@ -195,7 +196,7 @@ export default async (req) => {
     const base = siteUrl(req);
     const who = me.name || me.email;
     await Promise.all([
-      sendEmail({
+      job.notify_employer && sendEmail({
         to: job.employer_email,
         replyTo: me.email,
         subject: `New applicant for ${job.title}: ${who}`,

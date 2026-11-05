@@ -15,8 +15,11 @@ export default async (req, context) => {
 
   if (id) {
     if (!/^\d+$/.test(id)) return fail("Job not found", 404);
+    // Each detail view counts toward the posting's views in the employer dashboard.
+    // (The server-rendered /jobs/:id page for crawlers doesn't count; people's browsers call this.)
     const rows = await sql.query(
-      `SELECT ${PUBLIC_FIELDS} FROM jobs WHERE id = $1 AND status = 'open' AND expires_at > now()`,
+      `UPDATE jobs SET views = views + 1 WHERE id = $1 AND status = 'open' AND expires_at > now()
+       RETURNING ${PUBLIC_FIELDS}`,
       [id]
     );
     return rows[0] ? json(rows[0]) : fail("Job not found", 404);
