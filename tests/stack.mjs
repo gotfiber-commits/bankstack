@@ -15,7 +15,7 @@ export async function startStack(dbName = "bankstack_e2e") {
   const adminUrl = process.env.TEST_DATABASE_ADMIN_URL || "postgres://postgres@127.0.0.1:5432/postgres";
   Object.assign(process.env, {
     DATABASE_URL: adminUrl.replace(/\/[^/]*$/, `/${dbName}`), DB_DRIVER: "pg", URL: BASE,
-    STRIPE_SECRET_KEY: "sk_test_e2e", STRIPE_PRICE_ID: "price_e2e_99", STRIPE_WEBHOOK_SECRET: "whsec_e2e_secret",
+    STRIPE_SECRET_KEY: "sk_test_e2e", STRIPE_WEBHOOK_SECRET: "whsec_e2e_secret",
     STRIPE_API_HOST: "localhost", STRIPE_API_PORT: String(STRIPE_PORT), STRIPE_API_PROTOCOL: "http",
     ADMIN_TOKEN: "admin_e2e_token", LOCAL_BLOBS_DIR: mkdtempSync(path.join(os.tmpdir(), "bankstack-blobs-")),
     FDIC_API_BASE: `http://localhost:${REGISTRY_PORT}`, NCUA_API_BASE: `http://localhost:${REGISTRY_PORT}`,
@@ -39,6 +39,10 @@ export async function startStack(dbName = "bankstack_e2e") {
   const registries = await startFakeRegistries(REGISTRY_PORT);
   const fakeAi = await startFakeAnthropic(AI_PORT);
   const site = await startLocalServer(PORT);
+  // Billing setup, as the site owner does once from the admin console: the hiring-plan price, +$15 over 10.
+  const setup = await fetch(`${BASE}/api/admin/billing/plan`, { method: "POST",
+    headers: { authorization: "Bearer admin_e2e_token", "content-type": "application/json" }, body: JSON.stringify({ extra_dollars: 15 }) });
+  if (!setup.ok) throw new Error(`plan setup failed: ${await setup.text()}`);
   const { db } = await import("../netlify/lib/shared.mjs");
   const Stripe = (await import("stripe")).default;
   const stripeLib = new Stripe("sk_test_e2e");

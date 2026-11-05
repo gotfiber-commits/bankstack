@@ -177,7 +177,7 @@ export default async (req, context) => {
       <h2>${jobs.length ? `Open ${jobs.length === 1 ? "position" : "positions"} (${jobs.length})` : "Open positions"}</h2>
       ${jobs.length ? jobs.map(jobLink).join("")
         : `<p class="sub">No openings from ${esc(inst.name)} on ${BRAND} right now. <a href="/#home">Set a job alert</a> and we'll email you when banking roles${inst.state ? ` in ${esc(STATE_NAMES[inst.state] || inst.state)}` : ""} appear, or <a href="/#jobs">browse every open role</a>.</p>`}
-      <div class="claim"><b>Work for ${esc(inst.name)}?</b> Post your openings for $99/month and reach candidates who already know banking: <a href="/#post">post a job</a>. To claim or correct this page, email <a href="mailto:listings@bankjobz.com">listings@bankjobz.com</a>. Figures are from public ${inst.institution_type === "bank" ? "FDIC" : "NCUA"} data${inst.data_as_of ? ` (as of ${esc(inst.data_as_of)})` : ""}.</div>`;
+      <div class="claim"><b>Work for ${esc(inst.name)}?</b> Post up to 5 openings for $99/month and reach candidates who already know banking: <a href="/#post">post a job</a>. To claim or correct this page, email <a href="mailto:listings@bankjobz.com">listings@bankjobz.com</a>. Figures are from public ${inst.institution_type === "bank" ? "FDIC" : "NCUA"} data${inst.data_as_of ? ` (as of ${esc(inst.data_as_of)})` : ""}.</div>`;
     return page({
       title: `Jobs at ${inst.name}${where ? ` — ${where}` : ""} · ${BRAND}`,
       description: `${inst.name}: ${TYPE_LABEL[inst.institution_type].toLowerCase()}${where ? ` in ${where}` : ""}${inst.asset_thousands ? `, ${assets(inst.asset_thousands)} in assets` : ""}. See open jobs and get alerts for new banking roles.`,

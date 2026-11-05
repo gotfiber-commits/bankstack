@@ -1,6 +1,6 @@
 # BankJobz
 
-A job board for every kind of job at banks and credit unions: branch, lending, commercial, operations, risk and compliance, finance, wealth, technology, data and leadership. Employers pay **$99 per posting, per month**.
+A job board for every kind of job at banks and credit unions: branch, lending, commercial, operations, risk and compliance, finance, wealth, technology, data and leadership. Employers subscribe to a monthly **hiring plan**: **$99 for up to 5 live postings, $159.99 for up to 10**, and a set amount (chosen in the admin console) for each posting over 10.
 
 ## What it does
 
@@ -20,7 +20,7 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 **Employers**
 - **Employer accounts with MFA**: hiring managers create a free account (name, title, institution, work email, password) and confirm their email with a 6-digit code. Every sign-in on a new device is **password + a second factor** — a 6-digit code by email, or from an authenticator app (Microsoft/Google Authenticator, 1Password) with 10 single-use recovery codes. "Trust this device for 30 days" skips the code on their own computer. Built-in protections: scrypt-hashed passwords, limits counted before every check (8 tries per network; email-wide ceilings of 40 passwords and 10 codes; 15-minute pause), with the owner emailed when a pause starts. Trusted devices and the one-click button in every code email keep working through a pause, so nobody can lock the owner out. Codes are limited to 5 tries and 10 minutes, hashed revocable sessions (30-day max, 14-day idle), security-notice emails on password/MFA changes, and forms that never reveal whether an email has an account. "Employer sign in" is always in the top nav.
 - **Hiring dashboard** with tabs: **Overview** (live postings, applicants, last-7-days, job page views, monthly spend, a clickable hiring pipeline, recent applicants, and postings that need attention — unpaid, ending, or a week with no applicants); **Postings** (views, applicants, apply rate, edit, duplicate, cancel/keep renewing); **Applicants** (search, filter by posting and stage, sort by rating, 1–5 star ratings, private notes, résumé download, CSV export); **Talent pool**; **Account & security** (details, authenticator app setup by QR code, recovery codes, change password, every signed-in device with sign-out, forget trusted devices, applicant-email on/off).
-- **Post a job**: fill in the role, pay $99 through Stripe Checkout, and it goes live as a Direct listing above sourced jobs. Optional banking specifics — the core system the role touches and licenses required — make the posting filterable and boost its match rank for the right candidates.
+- **Post a job**: the first posting starts the institution's hiring plan in Stripe Checkout; after that, postings go live instantly under the plan. A posting that moves the plan to a higher price asks first, then charges the prorated difference. Closing postings lowers the next bill (no mid-month refunds), and reopening or replacing within a paid month is free. Postings go live as Direct listings above sourced jobs. Optional banking specifics — the core system the role touches and licenses required — make the posting filterable and boost its match rank for the right candidates.
 - **Talent pool** in the dashboard: browse opted-in candidates anonymously, filter by department, state, core system or license, and invite one to a posting with a note. Included with any live posting.
 - Each posting is its own monthly subscription. **Cancel posting** stops renewal (it stays up through the paid month); **Keep renewing** undoes it.
 - Email when a posting goes live and for **every new applicant** (reply goes straight to the candidate).
@@ -31,7 +31,7 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 - Take down any listing (a paid one also has its billing cancelled), reopen sourced ones, **add sourced listings** by hand, run the link check on demand.
 
 **AI writing assistant** (optional — appears once `ANTHROPIC_API_KEY` is set)
-- **Employers**: "Let AI draft the summary and description" on the post and edit forms — builds a clean, EEO-safe posting from the fields plus rough notes, filled into the form for them to edit. Better postings, less friction to the $99.
+- **Employers**: "Let AI draft the summary and description" on the post and edit forms — builds a clean, EEO-safe posting from the fields plus rough notes, filled into the form for them to edit. Better postings, less friction to posting.
 - **Candidates**: "Tailor my application" on any Direct job — a cover note and résumé-angle tips generated **only from what's actually in their résumé** (the prompt forbids inventing experience), prefilled and editable before one-click sending.
 - Guardrails: per-person daily limit (`AI_DAILY_LIMIT`, default 20) logged in `ai_usage`; the whole feature hides when no key is set; drafts always pass through human hands. Costs run well under a cent per draft on Haiku-class models — set a spend cap in the Anthropic console.
 
@@ -59,7 +59,7 @@ netlify/lib/             shared (db, Stripe, validation), banking (core systems,
                          institutions (FDIC/NCUA sync), match, email, files (résumés), extract, tasks
 db/schema.sql            every table; safe to re-run — it upgrades older databases in place
 scripts/seed.mjs         creates the schema and loads the seed jobs
-tests/                   e2e.mjs (299 API checks), browser.mjs (87 checks in real Chromium),
+tests/                   e2e.mjs (335 API checks), browser.mjs (94 checks in real Chromium),
                          fake Stripe, fake FDIC/NCUA, local server
 ```
 
@@ -71,8 +71,8 @@ Paste the whole of `db/schema.sql` into the Neon SQL Editor and click Run — it
 
 1. **Neon**: create a project; copy the pooled connection string.
 2. **Stripe** (test mode first):
-   - Product "Job posting" with a **recurring $99.00/month** price → copy the `price_…` ID.
-   - Settings → Billing → **Customer portal**: turn it on (cards, invoices, cancel).
+   - No product or price to create by hand: after deploying, open `/#admin` → **Billing setup**, enter the monthly price for each posting over 10, and click **Create the plan in Stripe**. It makes one graduated monthly price ($99 up to 5, $159.99 up to 10, + your amount each after).
+   - Settings → Billing → **Customer portal**: turn it on for cards, invoices and cancelling. Leave **"Customers can switch plans" and "update quantities" off**, because the site sets the plan's quantity itself from the number of live postings.
 3. **Resend**: add and verify your domain, create an API key. `EMAIL_FROM` must use that domain.
 4. **Seed the database** from your computer:
    ```bash
@@ -85,7 +85,7 @@ Paste the whole of `db/schema.sql` into the Neon SQL Editor and click Run — it
    `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`.
    Put its signing secret in `STRIPE_WEBHOOK_SECRET` and redeploy.
 7. **Try it with a test card** (`4242 4242 4242 4242`): post a job, apply to it from another browser with a PDF, check both inboxes, open `/#admin`.
-8. **Go live**: switch Stripe to live keys and a live $99 price, update the three Stripe variables, redeploy. Submit `https://YOUR-SITE/sitemap.xml` in Google Search Console.
+8. **Go live**: switch Stripe to live keys, update `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`, redeploy, then create the plan from `/#admin` → Billing setup in live mode. Submit `https://YOUR-SITE/sitemap.xml` in Google Search Console.
 9. **Load the directory**: open `/#admin` and click "Load the institution directory". Resubmit the sitemap afterwards so Google finds the ~8,500 new institution pages.
 
 ## Running locally
@@ -102,9 +102,9 @@ Both suites run the real function code against a real Postgres database, with a 
 ```bash
 # Postgres on localhost (e.g. docker run -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16)
 export TEST_DATABASE_ADMIN_URL=postgres://postgres@127.0.0.1:5432/postgres
-npm run test:e2e          # 299 checks: posting, payment, renewals, sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
+npm run test:e2e          # 335 checks: posting, hiring-plan billing (tiers, upgrades, closes, renewals, declines), sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
 npx playwright install chromium
-npm run test:browser      # 87 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
+npm run test:browser      # 94 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
 ```
 
 ## API

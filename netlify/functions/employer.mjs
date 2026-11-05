@@ -4,14 +4,15 @@
 // GET  /api/employer                          → account, postings (billing + application counts), applications
 // GET  /api/employer/jobs/:id                 → one posting, for the edit form
 // PUT  /api/employer/jobs/:id                 → edit a posting
-// POST /api/employer/jobs/:id/pay             → new checkout link for a posting still awaiting payment
-// POST /api/employer/jobs/:id/cancel          → stop renewing; stays live until its paid-through date
-// POST /api/employer/jobs/:id/resume          → undo a cancellation before it takes effect
+// POST /api/employer/jobs/:id/publish         → { confirm? } put a saved or closed posting live under the plan
+//                                               (may return { url } for Checkout, or { needs_confirm, … })
+// POST /api/employer/jobs/:id/close           → take a posting down; the plan's next bill drops to match
+// POST /api/employer/plan/cancel | resume     → end the plan at the end of this month / keep it
 // POST /api/employer/applications/:id/status  → { status } new | reviewing | interview | offer | hired | rejected
 // GET  /api/employer/applications/:id/resume  → download the uploaded résumé
 // POST /api/employer/billing                  → Stripe billing portal (cards, invoices)
 import {
-  db, stripe, json, fail, siteUrl, employerFromRequest, createJobCheckout, syncJobFromSubscription,
+  db, stripe, json, fail, siteUrl, employerFromRequest, syncJobFromSubscription,
   validateJob, APPLICATION_STATUSES, clean, normalizeName, INSTITUTION_TYPES,
 } from "../lib/shared.mjs";
 import { CORE_SYSTEMS, LICENSES } from "../lib/banking.mjs";
@@ -22,6 +23,7 @@ import {
   emailTag, passwordKeys, reserveAttempt, attemptPassed, clearAttempts,
 } from "../lib/auth.mjs";
 import QRCode from "qrcode";
+import { planSummary, publishPostings, closePostings, setPlanCancel, createPlanCheckout, BillingError } from "../lib/billing.mjs";
 
 async function notifySecurity(to, what) {
   await sendEmail({
@@ -55,7 +57,7 @@ export default async (req) => {
   if (req.method === "GET" && path === "/api/employer") {
     const jobs = await sql`
       SELECT j.id, j.title, j.location, j.category, j.status, j.posted_at, j.paid_through, j.expires_at,
-             j.cancel_at_period_end, j.views,
+             j.cancel_at_period_end, j.views, j.closed_by,
              COUNT(a.id)::int AS applications,
              COUNT(a.id) FILTER (WHERE a.status = 'new')::int AS new_applications,
              COUNT(a.id) FILTER (WHERE a.created_at > now() - interval '7 days')::int AS applications_7d
@@ -73,15 +75,19 @@ export default async (req) => {
     const pipeline = Object.fromEntries(APPLICATION_STATUSES.map((s) => [s, 0]));
     for (const a of applications) pipeline[a.status] = (pipeline[a.status] || 0) + 1;
     const dayMs = 86400000;
-    // Postings worth a look: ending soon without renewal, awaiting payment, or a week live with no applicants.
+    const plan = await planSummary(sql, employer);
+    // Postings worth a look: saved but not live, or a week live with no applicants; plus a plan that's ending.
     const attention = jobs.flatMap((j) => {
       const age = (Date.now() - new Date(j.posted_at).getTime()) / dayMs;
-      if (j.status === "pending") return [{ job_id: j.id, title: j.title, reason: "unpaid", text: "Not live yet — payment wasn't completed." }];
+      if (j.status === "pending") return [{ job_id: j.id, title: j.title, reason: "unpublished", text: "Saved but not live yet — publish it from Postings." }];
       if (j.status !== "open") return [];
-      if (j.cancel_at_period_end) return [{ job_id: j.id, title: j.title, reason: "ending", text: `Set to end ${new Date(j.paid_through).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — keep renewing if you're still hiring.` }];
       if (age >= 7 && j.applications === 0) return [{ job_id: j.id, title: j.title, reason: "quiet", text: `${Math.floor(age)} days live, no applicants yet — try adding pay, or sharpening the summary.` }];
       return [];
     });
+    if (plan.live && plan.cancel_at_period_end) {
+      attention.unshift({ job_id: null, title: "Your plan", reason: "ending",
+        text: `Set to end ${new Date(plan.paid_through).toLocaleDateString("en-US", { month: "short", day: "numeric" })}, and your postings come down with it. Keep your plan if you're still hiring.` });
+    }
     return json({
       company: employer.company, email: employer.email,
       account: {
@@ -92,14 +98,13 @@ export default async (req) => {
       },
       stats: {
         live_postings: open.length,
-        renewing: open.filter((j) => !j.cancel_at_period_end).length,
-        monthly_cents: open.filter((j) => !j.cancel_at_period_end).length * 9900,
+        monthly_cents: plan.next_bill_cents,
         applicants: applications.length,
         new_applicants: pipeline.new,
         applicants_7d: applications.filter((a) => Date.now() - new Date(a.created_at).getTime() < 7 * dayMs).length,
         views: open.reduce((s, j) => s + j.views, 0),
       },
-      pipeline, attention, jobs, applications,
+      plan, pipeline, attention, jobs, applications,
     });
   }
 
@@ -257,6 +262,15 @@ export default async (req) => {
     });
   }
 
+  // The hiring plan: end it at the end of this month, or keep it.
+  const planMatch = path.match(/^\/api\/employer\/plan\/(cancel|resume)$/);
+  if (planMatch && req.method === "POST") {
+    try {
+      await setPlanCancel(employer.id, planMatch[1] === "cancel");
+      return json({ ok: true, plan: await planSummary(sql, (await sql`SELECT * FROM employers WHERE id = ${employer.id}`)[0]) });
+    } catch (err) { return fail(err.message, err instanceof BillingError ? err.status : 502); }
+  }
+
   // Billing portal
   if (req.method === "POST" && path === "/api/employer/billing") {
     if (!employer.stripe_customer_id) return fail("No billing account yet.", 404);
@@ -384,7 +398,7 @@ export default async (req) => {
   }
 
   // Postings
-  const jobMatch = path.match(/^\/api\/employer\/jobs\/(\d+)(?:\/(pay|cancel|resume))?$/);
+  const jobMatch = path.match(/^\/api\/employer\/jobs\/(\d+)(?:\/(publish|pay|close|cancel|resume))?$/);
   if (!jobMatch) return fail("Not found", 404);
   const [job] = await sql`SELECT * FROM jobs WHERE id = ${jobMatch[1]} AND employer_id = ${employer.id}`;
   if (!job) return fail("Job not found", 404);
@@ -396,7 +410,7 @@ export default async (req) => {
   }
 
   if (!action && req.method === "PUT") {
-    if (job.status === "closed") return fail("This posting is closed. Post it again to relist it.");
+    if (job.status === "closed" && job.closed_by === "admin") return fail("This posting was taken down by BankJobz. Email listings@bankjobz.com if you think that's a mistake.");
     let b;
     try { b = await req.json(); } catch { return fail("Send JSON."); }
     const { job: v, error } = validateJob(b);
@@ -412,18 +426,34 @@ export default async (req) => {
 
   if (req.method !== "POST" || !action) return fail("Method not allowed", 405);
 
-  if (action === "pay") {
-    if (job.status !== "pending") return fail("This posting is already paid for.");
-    try { return json({ url: await createJobCheckout(req, employer, job.id) }); }
-    catch (err) { return fail(err.message, 500); }
+  // Older per-posting subscriptions keep their own stop/resume renewing.
+  if (job.stripe_subscription_id) {
+    if (!["cancel", "resume", "close"].includes(action)) return fail("This posting is billed on its own and is already paid for.");
+    const sub = await stripe().subscriptions.update(job.stripe_subscription_id, { cancel_at_period_end: action !== "resume" });
+    await syncJobFromSubscription(sub, job.id);
+    return json({ ok: true });
   }
 
-  if (!job.stripe_subscription_id) return fail("This posting has no active billing.");
-  const sub = await stripe().subscriptions.update(job.stripe_subscription_id, {
-    cancel_at_period_end: action === "cancel",
-  });
-  await syncJobFromSubscription(sub, job.id);
-  return json({ ok: true });
+  let b = {};
+  try { b = await req.json(); } catch { /* no body */ }
+  try {
+    if (action === "publish" || action === "pay") {
+      if (job.status === "open") return fail("This posting is already live.");
+      if (job.status === "closed" && job.closed_by === "admin") return fail("This posting was taken down by BankJobz and can't be reopened.");
+      const r = await publishPostings(employer.id, [job.id], { confirm: b.confirm === true });
+      if (r.needs_checkout) return json({ url: await createPlanCheckout(employer, job.id) });
+      if (r.needs_confirm) return json({ ...r, job_id: job.id });
+      return json({ ok: true, live: true, monthly_cents: r.monthly_cents, upgraded: r.upgraded });
+    }
+    if (action === "close" || action === "cancel") {
+      if (job.status === "closed") return fail("This posting is already closed.");
+      await closePostings(employer.id, [job.id]);
+      return json({ ok: true });
+    }
+    return fail("Not found", 404);
+  } catch (err) {
+    return fail(err.message, err instanceof BillingError ? err.status : 502);
+  }
 };
 
 export const config = { path: ["/api/employer", "/api/employer/*"] };

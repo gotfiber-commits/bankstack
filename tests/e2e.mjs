@@ -14,7 +14,7 @@ const PORT = 8899, STRIPE_PORT = 12111, REGISTRY_PORT = 8977, AI_PORT = 8978, BA
 
 Object.assign(process.env, {
   DATABASE_URL: DB_URL, DB_DRIVER: "pg", URL: BASE,
-  STRIPE_SECRET_KEY: "sk_test_e2e", STRIPE_PRICE_ID: "price_e2e_99", STRIPE_WEBHOOK_SECRET: "whsec_e2e_secret",
+  STRIPE_SECRET_KEY: "sk_test_e2e", STRIPE_WEBHOOK_SECRET: "whsec_e2e_secret",
   STRIPE_API_HOST: "localhost", STRIPE_API_PORT: String(STRIPE_PORT), STRIPE_API_PROTOCOL: "http",
   ADMIN_TOKEN: "admin_e2e_token", LOCAL_BLOBS_DIR: mkdtempSync(path.join(os.tmpdir(), "bankstack-blobs-")),
   FDIC_API_BASE: `http://localhost:${REGISTRY_PORT}`, NCUA_API_BASE: `http://localhost:${REGISTRY_PORT}`,
@@ -88,6 +88,14 @@ async function pay(session) {
   const { session: s } = await r.json();
   return sendWebhook("checkout.session.completed", s);
 }
+// Posts a job; if the employer has no plan yet, completes the Stripe Checkout that starts one.
+async function postJob(token, fields, extra = {}) {
+  const r = await call("POST", "/api/checkout", { token, body: { ...fields, ...extra } });
+  if (r.data?.url) await pay(lastSession());
+  return r;
+}
+const fakeStripeCall = (p, body) => fetch(`http://localhost:${STRIPE_PORT}${p}`, { method: "POST", body: JSON.stringify(body || {}) });
+const invoicesFor = (subId) => fakeStripe.invoices.filter((i) => i.subscription === subId);
 
 const jobFields = {
   title: "Senior Data Architect", location: "Florence, AL", work_mode: "hybrid", employment_type: "full-time",
@@ -442,8 +450,12 @@ try {
 
   // C: a wrong password takes the same time whether the email is unconfirmed (many sign-ups), confirmed or unknown.
   for (let i = 0; i < 10; i++) await call("POST", "/api/auth/signup", { body: { contact_name: "Pend", company: "Pend Bank", email: "intake@pendbank.test", password: `Pending-Pass-${i}-abc` } });
-  const timeIt = async (email) => { const t = []; for (let i = 0; i < 3; i++) { const s0 = Date.now(); await call("POST", "/api/auth/login", { ip: `192.0.2.${i}`, body: { email, password: "Wrong-Password-xyz" } }); t.push(Date.now() - s0); } return t.sort((a, b) => a - b)[1]; };
+  // Five tries each, compared by the middle one, so a busy test machine doesn't cause a false alarm.
+  const timeIt = async (email) => { const t = []; for (let i = 0; i < 5; i++) { const s0 = Date.now(); await call("POST", "/api/auth/login", { ip: `192.0.2.${i}`, body: { email, password: "Wrong-Password-xyz" } }); t.push(Date.now() - s0); } return t.sort((a, b) => a - b)[2]; };
+  // With a response floor above the real work (production uses 1.2 s), every answer takes the floor.
+  process.env.AUTH_MIN_MS = "500";
   const tPend = await timeIt("intake@pendbank.test"), tNone = await timeIt("nobody-at-all@none.test"), tReal = await timeIt("pat@prairie.test");
+  process.env.AUTH_MIN_MS = "150";
   check("wrong-password timing matches for unconfirmed, confirmed and unknown emails",
     Math.abs(tPend - tNone) < 60 && Math.abs(tReal - tNone) < 60, { tPend, tNone, tReal });
   outbox().length = 0;
@@ -533,17 +545,39 @@ try {
   check("…until the password changes; then it asks for a code again", !r.data.token && r.data.method === "email", r.data);
 
   // ================================================================
-  section("Posting a job at $99/month");
+  section("Hiring plan: setup and the first posting");
+  const tokenOwner = { A: (await sql`SELECT id FROM employers WHERE email = 'hr@shoalsbank.test'`)[0].id, otherKey: keyV };
+  r = await call("POST", "/api/checkout", { token: keyA, body: jobFields });
+  check("posting before billing is set up says so, and saves nothing", r.status === 503 && /set up/.test(r.data.error)
+    && (await sql`SELECT COUNT(*)::int n FROM jobs WHERE employer_id IS NOT NULL`)[0].n === 0, r.data);
+  r = await call("GET", "/api/plan");
+  check("the public plan says it isn't configured yet", r.status === 200 && r.data.configured === false);
+  r = await call("POST", "/api/admin/billing/plan", { body: { extra_dollars: 15 } });
+  check("only the admin can set up billing", r.status === 401);
+  r = await call("POST", "/api/admin/billing/plan", { token: "admin_e2e_token", body: { extra_dollars: 0.5 } });
+  check("a silly per-posting amount is refused", r.status === 400, r.data);
+  r = await call("POST", "/api/admin/billing/plan", { token: "admin_e2e_token", body: { extra_dollars: 15 } });
+  check("admin creates the plan price in Stripe", r.status === 200 && r.data.plan.base_cents === 9900 && r.data.plan.base_limit === 5
+    && r.data.plan.plus_cents === 15999 && r.data.plan.plus_limit === 10 && r.data.plan.extra_cents === 1500, r.data);
+  const planPriceId = r.data.plan.price_id;
+  const pr = fakeStripe.prices.get(planPriceId);
+  check("…as one graduated monthly price: $99 for 1–5, $159.99 for 6–10, +$15 each after",
+    pr.tiers_mode === "graduated" && pr.recurring.interval === "month"
+    && [1, 5, 6, 10, 11, 13].map((q) => fakeStripe.amountFor(pr, q)).join() === "9900,9900,15999,15999,17499,20499");
+  r = await call("GET", "/api/plan");
+  check("the site reads the prices straight from Stripe", r.data.configured && r.data.plus_cents === 15999 && r.data.extra_cents === 1500, r.data);
+
   r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "" } });
   check("missing title is rejected", r.status === 400 && /title/i.test(r.data.error), r.data);
   r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, salary_min: 200000, salary_max: 100000 } });
   check("salary min > max is rejected", r.status === 400, r.data);
   r = await call("POST", "/api/checkout", { token: keyA, body: jobFields });
-  check("checkout starts and returns a Stripe URL", r.status === 200 && r.data.url?.startsWith("https://checkout.stripe.test"), r.data);
+  check("the first posting starts a plan in Stripe Checkout", r.status === 200 && r.data.url?.startsWith("https://checkout.stripe.test"), r.data);
   const jobA = r.data.job_id;
   const sessA = lastSession();
-  check("checkout uses the $99 price, subscription mode", sessA._price === "price_e2e_99" && sessA.mode === "subscription");
-  check("job id travels with the subscription", sessA._subscription_metadata.job_id === String(jobA));
+  check("checkout is the plan price, quantity 1, subscription mode", sessA._price === planPriceId && sessA._quantity === 1 && sessA.mode === "subscription");
+  check("the subscription is marked as the employer's plan", sessA._subscription_metadata.kind === "plan"
+    && sessA._subscription_metadata.employer_id === String(tokenOwner.A) && sessA.metadata.job_id === String(jobA));
   r = await call("GET", `/api/jobs/${jobA}`);
   check("unpaid posting is not public", r.status === 404);
 
@@ -552,14 +586,22 @@ try {
   r = await call("GET", `/api/jobs/${jobA}`);
   check("paid posting is live under the account's institution", r.status === 200 && r.data.direct === true
     && r.data.salary_min === 115000 && r.data.company === "Shoals Community Bank", r.data);
-  check("employer gets a 'posting is live' email", !!lastEmailTo("hr@shoalsbank.test")?.subject.includes("live"));
+  const liveMail = lastEmailTo("hr@shoalsbank.test");
+  check("employer gets a 'posting is live' email that explains the plan", !!liveMail?.subject.includes("live")
+    && liveMail.text.includes("$99.00/month for up to 5") && liveMail.text.includes("$159.99/month for up to 10") && liveMail.text.includes("$15.00"), liveMail?.text);
 
   r = await call("GET", `/api/session?session_id=${sessA.id}`);
-  check("returning from Stripe confirms the posting without handing out credentials", r.status === 200 && !("token" in r.data) && r.data.job?.status === "open", r.data);
+  check("returning from Stripe confirms the posting without handing out credentials", r.status === 200 && !("token" in r.data) && r.data.job?.status === "open" && r.data.plan === true, r.data);
+  r = await call("GET", `/api/session?session_id=${sessA.id}`, { token: tokenOwner.otherKey });
+  check("…and another signed-in account can't use someone else's checkout", r.status === 403);
   r = await call("GET", "/api/jobs");
   check("direct posting is listed first", r.data.jobs[0].id === jobA && r.data.jobs.length === SEED_LEN + 1);
   r = await call("GET", "/api/employer", { token: keyA });
   check("billing appears on the account once paid", r.data.account.has_billing === true && r.data.jobs.length === 1);
+  check("the dashboard shows the plan: 1 of 5, $99 a month", r.data.plan.live && r.data.plan.active_postings === 1
+    && r.data.plan.this_month_cents === 9900 && r.data.plan.next_bill_cents === 9900 && r.data.plan.tiers.base_limit === 5, r.data.plan);
+  const subA = (await sql`SELECT plan_subscription_id FROM employers WHERE email = 'hr@shoalsbank.test'`)[0].plan_subscription_id;
+  check("one plan subscription for the institution, charged $99 once", !!subA && invoicesFor(subA).length === 1 && invoicesFor(subA)[0].amount === 9900);
 
   r = await call("POST", "/api/stripe-webhook", { body: { type: "checkout.session.completed" } });
   check("webhook without a valid signature is rejected", r.status === 400);
@@ -815,22 +857,23 @@ try {
   r = await call("POST", "/api/employer/billing", { token: keyA });
   check("cards & invoices opens the Stripe portal", r.status === 200 && r.data.url?.includes("billing.stripe.test"));
 
-  // second posting by a signed-in employer, left unpaid, then paid from the dashboard
+  // A second posting goes straight live under the plan: no checkout, no charge.
+  const invBefore = invoicesFor(subA).length;
   r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Branch Manager", category: "branch-retail" } });
   const jobA2 = r.data.job_id;
-  check("signed-in employer posts a second job", r.status === 200 && !!jobA2);
-  r = await call("POST", `/api/employer/jobs/${jobA2}/pay`, { token: keyA });
-  check("unpaid posting can be paid later from the dashboard", r.status === 200 && r.data.url);
-  r = await call("POST", `/api/employer/jobs/${jobA}/pay`, { token: keyA });
-  check("can't pay twice for a live posting", r.status === 400);
+  check("a second posting goes live right away under the plan", r.status === 200 && r.data.live === true && !r.data.url && !!jobA2, r.data);
+  check("…with no new charge (up to 5 postings is $99)", invoicesFor(subA).length === invBefore && fakeStripe.subs.get(subA).items.data[0].quantity === 2);
+  r = await call("GET", `/api/jobs/${jobA2}`);
+  check("…and it's public", r.status === 200);
+  r = await call("POST", `/api/employer/jobs/${jobA}/publish`, { token: keyA });
+  check("publishing a live posting again is refused", r.status === 400);
 
   // ================================================================
   section("Privacy between employers");
   const tvcu = await signUp({ contact_name: "Riley Shaw", company: "Tennessee Valley CU", email: "jobs@tvcu.test", institution_type: "credit-union" });
   const keyB = tvcu.key;
-  r = await call("POST", "/api/checkout", { token: keyB, body: { ...jobFields, title: "Mortgage Loan Officer", category: "lending-credit" } });
+  r = await postJob(keyB, { ...jobFields, title: "Mortgage Loan Officer", category: "lending-credit" });
   const jobB = r.data.job_id;
-  await pay(lastSession());
   check("second employer is set up", /^bss_/.test(keyB) && keyB !== keyA);
   r = await call("GET", `/api/employer/applications/${appRow.id}/resume`, { token: keyB });
   check("employer B can't download A's applicant résumé", r.status === 404);
@@ -862,37 +905,131 @@ try {
   await call("POST", "/api/employer/security/notifications", { token: keyB, body: { notify_each_applicant: true } });
 
   // ================================================================
-  section("Renewals and cancellation");
-  const subA = (await sql`SELECT stripe_subscription_id FROM jobs WHERE id = ${jobA}`)[0].stripe_subscription_id;
-  r = await call("POST", `/api/employer/jobs/${jobA}/cancel`, { token: keyA });
-  let row = (await sql`SELECT status, cancel_at_period_end FROM jobs WHERE id = ${jobA}`)[0];
-  check("cancel: stops renewal but stays live this month", r.status === 200 && row.status === "open" && row.cancel_at_period_end === true);
-  check("cancel is sent to Stripe", fakeStripe.subs.get(subA).cancel_at_period_end === true);
-  r = await call("POST", `/api/employer/jobs/${jobA}/resume`, { token: keyA });
-  row = (await sql`SELECT cancel_at_period_end FROM jobs WHERE id = ${jobA}`)[0];
-  check("keep renewing undoes it", row.cancel_at_period_end === false && fakeStripe.subs.get(subA).cancel_at_period_end === false);
+  section("Hiring plan: tiers, upgrades and the next bill");
+  const planA = async () => (await call("GET", "/api/employer", { token: keyA })).data.plan;
+  const qtyA = () => fakeStripe.subs.get(subA).items.data[0].quantity;
+  const custA = fakeStripe.subs.get(subA).customer;
+  const roles = (n, tag) => Array.from({ length: n }, (_, i) => ({ ...jobFields, title: `${tag} ${i + 1}` }));
+  let inv = invoicesFor(subA).length;
 
-  const before = (await sql`SELECT paid_through FROM jobs WHERE id = ${jobA}`)[0].paid_through;
-  await fetch(`http://localhost:${STRIPE_PORT}/test/subscriptions/${subA}`, { method: "POST", body: JSON.stringify({ renew: true }) });
+  // Up to 5 active postings: all on the $99 plan.
+  const extraA = [];
+  for (const f of roles(3, "Teller")) { r = await call("POST", "/api/checkout", { token: keyA, body: f }); extraA.push(r.data.job_id); }
+  check("postings 3–5 go live with no charge", extraA.every(Boolean) && invoicesFor(subA).length === inv && qtyA() === 5);
+  let plan = await planA();
+  check("…the plan shows 5 of 5 at $99", plan.active_postings === 5 && plan.this_month_cents === 9900 && plan.next_bill_cents === 9900, plan);
+
+  // The 6th asks first, because it moves the plan to $159.99.
+  r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Universal Banker" } });
+  const sixth = r.data.job_id;
+  check("a 6th posting asks before moving the plan to $159.99", r.status === 200 && r.data.needs_confirm === true
+    && r.data.count === 6 && r.data.from_cents === 9900 && r.data.to_cents === 15999, r.data);
+  check("…and until they confirm it's saved but not live, and nothing is charged", (await call("GET", `/api/jobs/${sixth}`)).status === 404
+    && (await sql`SELECT status FROM jobs WHERE id = ${sixth}`)[0].status === "pending" && invoicesFor(subA).length === inv && qtyA() === 5);
+  r = await call("POST", `/api/employer/jobs/${sixth}/publish`, { token: keyA, body: { confirm: true } });
+  const upCharge = invoicesFor(subA).at(-1);
+  check("confirming puts it live and charges the prorated difference today", r.status === 200 && r.data.live && r.data.upgraded === true
+    && invoicesFor(subA).length === inv + 1 && upCharge.amount > 0 && upCharge.amount <= 6099 && qtyA() === 6, { r: r.data, upCharge });
+  inv = invoicesFor(subA).length;
+  plan = await planA();
+  check("…the plan shows $159.99 this month and next", plan.active_postings === 6 && plan.this_month_cents === 15999 && plan.next_bill_cents === 15999, plan);
+
+  // Closing postings: no refund for this month, the next bill drops.
+  r = await call("POST", `/api/employer/jobs/${extraA[0]}/close`, { token: keyA });
+  await call("POST", `/api/employer/jobs/${extraA[1]}/close`, { token: keyA });
+  plan = await planA();
+  check("closing two postings drops the next bill to $99, with no refund now", r.status === 200 && qtyA() === 4
+    && invoicesFor(subA).length === inv && plan.this_month_cents === 15999 && plan.next_bill_cents === 9900 && plan.active_postings === 4, plan);
+  check("…and closed postings come off the site", (await call("GET", `/api/jobs/${extraA[0]}`)).status === 404);
+  r = await call("POST", `/api/employer/jobs/${extraA[0]}/publish`, { token: keyA });
+  check("reopening within the month costs nothing (already paid for 6)", r.status === 200 && r.data.live && !r.data.needs_confirm
+    && invoicesFor(subA).length === inv && qtyA() === 5, r.data);
+  r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Replacement role" } });
+  check("…and so does getting back to 6 with a new posting", r.data.live === true && !r.data.needs_confirm && invoicesFor(subA).length === inv && qtyA() === 6, r.data);
+  for (const f of roles(4, "Analyst")) { r = await call("POST", "/api/checkout", { token: keyA, body: f }); }
+  check("7–10 postings stay at $159.99 with no further charge", r.data.live === true && invoicesFor(subA).length === inv && qtyA() === 10);
+
+  // Over 10: $15 for each posting past 10.
+  r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Eleventh role" } });
+  check("an 11th posting asks first: $159.99 → $174.99", r.data.needs_confirm && r.data.from_cents === 15999 && r.data.to_cents === 17499, r.data);
+  const eleventh = r.data.job_id;
+  r = await call("POST", `/api/employer/jobs/${eleventh}/publish`, { token: keyA, body: { confirm: true } });
+  check("…and confirming charges up to $15, prorated", r.status === 200 && invoicesFor(subA).at(-1).amount > 0
+    && invoicesFor(subA).at(-1).amount <= 1500 && qtyA() === 11);
+  inv = invoicesFor(subA).length;
+
+  // A declined card changes nothing.
+  await fakeStripeCall(`/test/customers/${custA}/decline`, { decline: true });
+  r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Declined role" } }, );
+  const declinedJob = r.data.job_id;
+  r = await call("POST", `/api/employer/jobs/${declinedJob}/publish`, { token: keyA, body: { confirm: true } });
+  check("a declined card: the posting stays unpublished, with a clear message", r.status === 402 && /card wasn't charged/.test(r.data.error)
+    && (await sql`SELECT status FROM jobs WHERE id = ${declinedJob}`)[0].status === "pending", r.data);
+  check("…and the plan is untouched", qtyA() === 11 && invoicesFor(subA).length === inv);
+  await fakeStripeCall(`/test/customers/${custA}/decline`, { decline: false });
+  r = await call("POST", `/api/employer/jobs/${declinedJob}/publish`, { token: keyA, body: { confirm: true } });
+  check("…after updating the card, publishing works", r.status === 200 && qtyA() === 12);
+
+  // Several tabs at once can't miscount or double-charge.
+  const burstJobs = await Promise.all(roles(4, "Parallel").map((f) => call("POST", "/api/checkout", { token: keyA, body: { ...f, confirm_upgrade: true } })));
+  const activeNow = (await sql`SELECT COUNT(*)::int n FROM jobs WHERE employer_id = ${tokenOwner.A} AND status = 'open'`)[0].n;
+  check("4 postings at once: every one goes live and Stripe's count matches exactly", burstJobs.every((x) => x.data.live) && activeNow === 16 && qtyA() === 16,
+    { statuses: burstJobs.map((x) => x.status), activeNow, qty: qtyA() });
+  const burstCharged = invoicesFor(subA).slice(inv + 1).reduce((t, i) => t + i.amount, 0);
+  check("…and together they're charged no more than 4 × $15", burstCharged > 0 && burstCharged <= 6000, burstCharged);
+
+  // The next month bills what's active then.
+  const openIds = (await sql`SELECT id FROM jobs WHERE employer_id = ${tokenOwner.A} AND status = 'open' ORDER BY id`).map((x) => x.id);
+  for (const id of openIds.slice(3)) await call("POST", `/api/employer/jobs/${id}/close`, { token: keyA });
+  plan = await planA();
+  check("closing down to 3 postings: next bill $99, this month still as paid", qtyA() === 3 && plan.next_bill_cents === 9900
+    && plan.this_month_cents === fakeStripe.amountFor(fakeStripe.prices.get(planPriceId), 16), plan);
+  const before = (await sql`SELECT paid_through FROM jobs WHERE id = ${openIds[0]}`)[0].paid_through;
+  await fakeStripeCall(`/test/subscriptions/${subA}`, { renew: true });
   await sendWebhook("customer.subscription.updated", fakeStripe.subs.get(subA));
-  const after = (await sql`SELECT paid_through, expires_at FROM jobs WHERE id = ${jobA}`)[0];
-  check("monthly renewal extends the listing", after.paid_through > before && after.expires_at > after.paid_through);
+  check("the renewal bills $99 for the 3 active postings", invoicesFor(subA).at(-1).reason === "subscription_cycle" && invoicesFor(subA).at(-1).amount === 9900);
+  plan = await planA();
+  const after = (await sql`SELECT paid_through, expires_at FROM jobs WHERE id = ${openIds[0]}`)[0];
+  check("…the new month starts at 3 paid, and live postings run through it", plan.paid_postings === 3 && plan.this_month_cents === 9900
+    && after.paid_through > before && after.expires_at > after.paid_through, { plan, after });
+  r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "New month role" } });
+  check("…so in the new month, a 4th posting is free again", r.data.live === true && qtyA() === 4);
 
-  await fetch(`http://localhost:${STRIPE_PORT}/test/subscriptions/${subA}`, { method: "POST", body: JSON.stringify({ status: "past_due" }) });
+  // Ending and keeping the plan.
+  r = await call("POST", "/api/employer/plan/cancel", { token: keyA });
+  check("cancel the plan: it runs to the end of the month", r.status === 200 && r.data.plan.cancel_at_period_end && fakeStripe.subs.get(subA).cancel_at_period_end === true);
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("…the dashboard flags it, and postings show their end date", r.data.attention[0]?.reason === "ending" && r.data.plan.next_bill_cents === 0
+    && r.data.jobs.filter((j) => j.status === "open").every((j) => j.cancel_at_period_end), r.data.attention);
+  r = await call("POST", "/api/employer/plan/resume", { token: keyA });
+  check("keep the plan undoes it", r.status === 200 && !r.data.plan.cancel_at_period_end && fakeStripe.subs.get(subA).cancel_at_period_end === false);
+
+  await fakeStripeCall(`/test/subscriptions/${subA}`, { status: "past_due" });
   await sendWebhook("customer.subscription.updated", fakeStripe.subs.get(subA));
   r = await call("GET", `/api/jobs/${jobA}`);
-  check("failed card (past due): stays up while Stripe retries", r.status === 200);
+  check("failed card (past due): postings stay up while Stripe retries", r.status === 200);
 
-  await fetch(`http://localhost:${STRIPE_PORT}/test/subscriptions/${subA}`, { method: "POST", body: JSON.stringify({ status: "canceled" }) });
+  await fakeStripeCall(`/test/subscriptions/${subA}`, { status: "canceled" });
   await sendWebhook("customer.subscription.deleted", fakeStripe.subs.get(subA));
   r = await call("GET", `/api/jobs/${jobA}`);
-  check("subscription ends: posting comes down", r.status === 404);
+  check("the plan ends: every posting comes down", r.status === 404
+    && (await sql`SELECT COUNT(*)::int n FROM jobs WHERE employer_id = ${tokenOwner.A} AND status = 'open'`)[0].n === 0);
   r = await call("GET", `/jobs/${jobA}`);
   check("ended posting's page is 404 + noindex", r.status === 404 && String(r.data).includes('content="noindex"'));
   r = await call("POST", "/api/apply", { body: { job_id: jobA, name: "Late", email: "late@example.test" } });
   check("can't apply to a closed posting", r.status === 404);
   r = await call("PUT", `/api/employer/jobs/${jobA}`, { token: keyA, body: jobFields });
-  check("closed posting can't be edited", r.status === 400);
+  check("a closed posting can still be edited before reopening", r.status === 200);
+
+  r = await call("POST", `/api/employer/jobs/${jobA}/publish`, { token: keyA });
+  check("reopening with no plan starts a new one in Checkout", r.status === 200 && r.data.url?.startsWith("https://checkout.stripe.test"), r.data);
+  await pay(lastSession());
+  const subA2 = (await sql`SELECT plan_subscription_id FROM employers WHERE id = ${tokenOwner.A}`)[0].plan_subscription_id;
+  r = await call("GET", `/api/jobs/${jobA}`);
+  check("…and paying puts it back up on a fresh plan", r.status === 200 && subA2 && subA2 !== subA);
+  await sendWebhook("customer.subscription.updated", fakeStripe.subs.get(subA));
+  r = await call("GET", "/api/employer", { token: keyA });
+  check("a late event from the old plan doesn't disturb the new one", r.data.plan.live && r.data.plan.active_postings === 1, r.data.plan);
 
   // ================================================================
   section("Job alerts");
@@ -905,11 +1042,9 @@ try {
   r = await fetch(confirmLink.replace(BASE, BASE), { redirect: "manual" });
   check("confirm link works and redirects to the site", r.status === 303 && r.headers.get("location").includes("alerts=confirmed"));
   await new Promise((s) => setTimeout(s, 20));
-  r = await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Data Governance Architect" } });
+  r = await postJob(keyA, { ...jobFields, title: "Data Governance Architect" });
   const jobA3 = r.data.job_id;
-  await pay(lastSession());
-  await call("POST", "/api/checkout", { token: keyA, body: { ...jobFields, title: "Teller", category: "branch-retail" } });
-  await pay(lastSession());
+  await postJob(keyA, { ...jobFields, title: "Teller", category: "branch-retail" });
   outbox().length = 0;
   r = await runAlertDigest(BASE);
   const digest = lastEmailTo("alex@example.test");
@@ -1143,8 +1278,14 @@ try {
   r = await call("GET", "/api/admin");
   check("admin needs the admin key", r.status === 401);
   r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
-  check("admin figures: live paid postings and monthly revenue",
-    r.status === 200 && r.data.paid_live === 3 && r.data.mrr_cents === 3 * 9900 && r.data.unpaid === 1
+  const livePlans = await sql`SELECT e.id, (SELECT COUNT(*)::int FROM jobs j WHERE j.employer_id = e.id AND j.status = 'open') AS n
+    FROM employers e WHERE e.plan_status IN ('active', 'past_due', 'trialing') AND NOT e.plan_cancel_at_period_end`;
+  const expectMrr = livePlans.reduce((t, e) => t + fakeStripe.amountFor(fakeStripe.prices.get(planPriceId), Math.max(1, e.n)), 0);
+  const [{ n: paidLiveNow }] = await sql`SELECT COUNT(*)::int n FROM jobs WHERE employer_id IS NOT NULL AND status = 'open' AND expires_at > now()`;
+  const [{ n: unpaidNow }] = await sql`SELECT COUNT(*)::int n FROM jobs WHERE employer_id IS NOT NULL AND status = 'pending'`;
+  check("admin figures: live postings, plans and monthly revenue from Stripe's prices",
+    r.status === 200 && r.data.paid_live === paidLiveNow && r.data.mrr_cents === expectMrr && expectMrr > 0 && r.data.unpaid === unpaidNow
+    && r.data.live_plans === livePlans.length && r.data.billing.plan.extra_cents === 1500
     && r.data.employer_count === (await sql`SELECT COUNT(*)::int n FROM employers WHERE verified_at IS NOT NULL`)[0].n, {
       paid_live: r.data.paid_live, mrr: r.data.mrr_cents, unpaid: r.data.unpaid, employers: r.data.employer_count });
   r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
@@ -1181,9 +1322,14 @@ try {
   check("…and leaves a working one open", statuses[liveId] === "open");
   r = await call("POST", `/api/admin/jobs/${goneId}/reopen`, { token: "admin_e2e_token" });
   check("admin can reopen a sourced listing", r.status === 200 && (await sql`SELECT status FROM jobs WHERE id = ${goneId}`)[0].status === "open");
-  const subB = (await sql`SELECT stripe_subscription_id FROM jobs WHERE id = ${jobB}`)[0].stripe_subscription_id;
+  const subB = (await sql`SELECT plan_subscription_id FROM employers WHERE email = 'jobs@tvcu.test'`)[0].plan_subscription_id;
   r = await call("POST", `/api/admin/jobs/${jobB}/close`, { token: "admin_e2e_token" });
-  check("admin take-down of a paid posting also cancels its billing", r.status === 200 && fakeStripe.subs.get(subB).status === "canceled");
+  const takenDown = (await sql`SELECT status, closed_by FROM jobs WHERE id = ${jobB}`)[0];
+  check("admin take-down of a plan posting closes it and keeps the plan's count right", r.status === 200 && takenDown.status === "closed"
+    && takenDown.closed_by === "admin" && fakeStripe.subs.get(subB).status === "active"
+    && fakeStripe.subs.get(subB).items.data[0].quantity === Math.max(1, (await sql`SELECT COUNT(*)::int n FROM jobs WHERE employer_id = (SELECT id FROM employers WHERE email = 'jobs@tvcu.test') AND status = 'open'`)[0].n));
+  r = await call("POST", `/api/employer/jobs/${jobB}/publish`, { token: keyB });
+  check("…and the employer can't put a taken-down posting back up", r.status === 400 && /taken down/.test(r.data.error));
   r = await call("GET", "/api/employer/talent", { token: keyB });
   check("the talent pool closes when the employer's last posting ends", r.status === 403);
 

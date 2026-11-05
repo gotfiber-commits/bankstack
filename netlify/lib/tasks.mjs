@@ -99,7 +99,7 @@ export async function runLinkCheck({ limit = 40, timeoutMs = 6000 } = {}) {
 
 // Closes anything past its expiry date so the public list and the admin counts agree.
 export async function closeExpired() {
-  const rows = await db()`UPDATE jobs SET status = 'closed', updated_at = now()
+  const rows = await db()`UPDATE jobs SET status = 'closed', closed_by = 'expired', updated_at = now()
                           WHERE status = 'open' AND expires_at <= now() RETURNING id`;
   return rows.length;
 }

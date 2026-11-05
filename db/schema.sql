@@ -282,3 +282,20 @@ ALTER TABLE auth_challenges ADD COLUMN IF NOT EXISTS link_hash TEXT;
 CREATE INDEX IF NOT EXISTS auth_challenges_link_idx ON auth_challenges (link_hash) WHERE link_hash IS NOT NULL;
 -- One salt per account for unconfirmed sign-up passwords, so sign-in always does the same work.
 ALTER TABLE employers ADD COLUMN IF NOT EXISTS pending_salt TEXT;
+
+-- Plan billing: one Stripe subscription per institution. Its quantity is the number of active
+-- postings; one graduated price makes 1–5 cost $99, 6–10 $159.99, and each posting over 10 a set
+-- amount more. plan_paid_quantity is the most postings already paid for in the current period, so
+-- closing and reopening within a month never charges twice; closing only lowers the next bill.
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_subscription_id TEXT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_item_id         TEXT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_status          TEXT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_quantity        INTEGER;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_paid_quantity   INTEGER;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_period_start    TIMESTAMPTZ;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_paid_through    TIMESTAMPTZ;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_cancel_at_period_end BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS billing_lock_at      TIMESTAMPTZ;
+CREATE UNIQUE INDEX IF NOT EXISTS employers_plan_sub_idx ON employers (plan_subscription_id) WHERE plan_subscription_id IS NOT NULL;
+-- Who took a posting down: employer | plan | expired | admin. Only admin take-downs can't be reopened.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS closed_by TEXT;

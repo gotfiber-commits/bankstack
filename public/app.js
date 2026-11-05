@@ -1,8 +1,13 @@
 (() => {
   "use strict";
 
-  // Display only. Stripe charges whatever STRIPE_PRICE_ID is set to ($99/month recurring).
-  const PRICE = "$99";
+  // The hiring plan's prices, from /api/plan (read from Stripe, which is what actually charges).
+  // These defaults show only until it loads, or if billing isn't set up yet.
+  let PLAN = { base_cents: 9900, base_limit: 5, plus_cents: 15999, plus_limit: 10, extra_cents: null };
+  // What `n` active postings cost per month under the plan.
+  const planCost = (n) => n <= PLAN.base_limit ? PLAN.base_cents
+    : n <= PLAN.plus_limit || !PLAN.extra_cents ? PLAN.plus_cents
+    : PLAN.plus_cents + PLAN.extra_cents * (n - PLAN.plus_limit);
 
   const CATEGORIES = {
     "branch-retail": "Branch & retail",
@@ -61,7 +66,24 @@
   };
   const jobCode = (id) => "BSK-" + String(id).padStart(4, "0");
   const fmtDate = (d) => (d ? new Date(d).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) : "");
-  const fmtMoney = (cents) => "$" + (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 0 });
+  // $99 for whole dollars, $159.99 otherwise.
+  const fmtMoney = (cents) => {
+    const d = (cents || 0) / 100;
+    return "$" + (Number.isInteger(d) ? d.toLocaleString() : d.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  };
+  // The plan in one sentence, and as a small price ladder.
+  const planSentence = () => `${fmtMoney(PLAN.base_cents)} a month covers up to ${PLAN.base_limit} live postings; up to ${PLAN.plus_limit} is ${fmtMoney(PLAN.plus_cents)}${PLAN.extra_cents ? `, and each one past ${PLAN.plus_limit} adds ${fmtMoney(PLAN.extra_cents)}` : ""}.`;
+  const planLadder = (activeCount = null) => {
+    const rows = [
+      [`Up to ${PLAN.base_limit} postings`, PLAN.base_cents, (n) => n <= PLAN.base_limit],
+      [`${PLAN.base_limit + 1}–${PLAN.plus_limit} postings`, PLAN.plus_cents, (n) => n > PLAN.base_limit && n <= PLAN.plus_limit],
+    ];
+    const extra = PLAN.extra_cents ? `<li${activeCount > PLAN.plus_limit ? ' class="on"' : ""}><span>Each posting over ${PLAN.plus_limit}</span><b>+${fmtMoney(PLAN.extra_cents)}</b></li>` : "";
+    return `<ul class="ladder">${rows.map(([label, cents, here]) => `<li${activeCount != null && here(Math.max(1, activeCount)) ? ' class="on"' : ""}><span>${label}</span><b>${fmtMoney(cents)}<small>/mo</small></b></li>`).join("")}${extra}</ul>`;
+  };
+  async function loadPlan() {
+    try { const p = await api("/api/plan"); if (p.configured) PLAN = p; } catch { /* keep the defaults */ }
+  }
   const fmtSize = (b) => (b > 1048576 ? (b / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(b / 1024)) + " KB");
   // Real, shareable URLs on the live site; hash links in the preview, which has no server.
   const jobHref = (id) => (state.demo ? `#job-${id}` : `/jobs/${id}`);
@@ -341,7 +363,7 @@
             <p class="lede">BankJobz lists jobs at banks and credit unions only, from tellers and loan officers to compliance, operations, technology and leadership. Candidates find roles that value banking experience. Banks reach people who already know the industry.</p>
             <div class="cta-row">
               <a class="btn btn-lg" href="#jobs">View current positions</a>
-              <a class="btn btn-lg secondary" href="#post">Post a job · ${PRICE}/mo</a>
+              <a class="btn btn-lg secondary" href="#post">Post a job · from ${fmtMoney(PLAN.base_cents)}/mo</a>
             </div>
           </div>
           <aside class="statement" aria-label="Latest openings">
@@ -380,7 +402,7 @@
           <div class="audience">
             <p class="eyebrow">For banks and credit unions</p>
             <h2>Reach candidates who already speak your language.</h2>
-            <p>Skip general job boards full of applicants who've never worked in a bank. Post a role for ${PRICE} a month, review applicants and résumés in your dashboard, and stop whenever it's filled.</p>
+            <p>Skip general job boards full of applicants who've never worked in a bank. One plan — ${fmtMoney(PLAN.base_cents)} a month for up to ${PLAN.base_limit} roles — then review applicants and résumés in your dashboard, and stop whenever it's filled.</p>
             <a class="text-link" href="#post">Post a job →</a>
           </div>
         </div>
@@ -408,18 +430,19 @@
             <h2 class="section-title">Three steps, about five minutes</h2>
             <ol class="steps">
               <li><b>Describe the role.</b> Title, location, pay range and what the team does.</li>
-              <li><b>Pay by card through Stripe.</b> ${PRICE} for the first month of that posting.</li>
-              <li><b>Go live and review applicants.</b> Your posting sits above sourced listings, marked Direct, and gets its own page in Google's job search. It renews monthly until you cancel it.</li>
+              <li><b>Start your plan by card through Stripe.</b> One monthly plan for your institution — ${fmtMoney(PLAN.base_cents)} covers up to ${PLAN.base_limit} live postings.</li>
+              <li><b>Go live and review applicants.</b> Your postings sit above sourced listings, marked Direct, each with its own page in Google's job search. Later postings go live instantly under your plan.</li>
             </ol>
           </div>
           <div class="price-card">
-            <div class="price"><strong>${PRICE}</strong><span>per posting, per month</span></div>
+            <div class="price"><strong>${fmtMoney(PLAN.base_cents)}</strong><span>per month for up to ${PLAN.base_limit} postings</span></div>
+            ${planLadder()}
             <ul>
               <li>Featured above sourced listings</li>
               <li>Applicants and résumés in your dashboard, with an email for each one</li>
               <li>Move candidates through stages from New to Hired</li>
-              <li>Post as many roles as you need, each billed on its own</li>
-              <li>Cancel a posting any time; it stays up through the month you paid for</li>
+              <li>Close a posting and post another any time — no extra charge within your plan</li>
+              <li>Cancel any time; postings stay up through the month you've paid for</li>
             </ul>
             <a class="btn btn-lg" href="#post">Post a job</a>
           </div>
@@ -728,7 +751,7 @@
       } else if (mode === "signup") {
         body.innerHTML = `
           <form class="form" id="signup-form" novalidate>
-            <p class="source-note">Free to create. Your own dashboard for postings, applicants and billing — you only pay ${PRICE}/month per job you post.</p>
+            <p class="source-note">Free to create. Your own dashboard for postings, applicants and billing — you only pay when you post: ${fmtMoney(PLAN.base_cents)}/month covers up to ${PLAN.base_limit} live postings.</p>
             <div class="row-2">
               <div class="field"><label for="su-name">Your name</label><input id="su-name" name="contact_name" autocomplete="name" required></div>
               <div class="field"><label for="su-title">Your title (optional)</label><input id="su-title" name="contact_title" autocomplete="organization-title" placeholder="HR Manager"></div>
@@ -831,8 +854,8 @@
   const postIntro = (extra = "") => `
     <section class="post-intro">
       <p class="eyebrow">Post a job</p>
-      <h1>${PRICE} per posting, per month.</h1>
-      <p class="lede">Create your free employer account, describe the role, and pay by card through Stripe. It goes live right away as a Direct listing above sourced jobs, with its own page in Google's job search, and renews monthly until you cancel it from your dashboard.</p>
+      <h1>${fmtMoney(PLAN.base_cents)} a month for up to ${PLAN.base_limit} postings.</h1>
+      <p class="lede">One plan for your institution, billed monthly by card through Stripe. ${planSentence()} Postings go live right away as Direct listings above sourced jobs, each with its own page in Google's job search. Close and replace postings any time, and cancel from your dashboard.</p>
       ${extra}
     </section>`;
 
@@ -846,9 +869,9 @@
       bindAuth(() => { location.hash = "post"; route(); });
       return;
     }
-    let acct = null, prefill = {};
+    let acct = null, plan = null, prefill = {};
     if (!state.demo) {
-      try { acct = (await api("/api/employer", { auth: true })).account; }
+      try { ({ account: acct, plan } = await api("/api/employer", { auth: true })); }
       catch (err) { if (err.status === 401) return signedOut(err.message); }
       // "Duplicate" from the dashboard: start from an existing posting.
       if (state.duplicateFrom) {
@@ -863,9 +886,9 @@
           <h2>${prefill.title ? "The role (copied from an earlier posting)" : "The role"}</h2>
           ${roleFields(prefill, "p", aiDraftBox())}
           ${honeypot}
-          <div class="checkout-line"><span>Due today, then monthly</span><strong>${PRICE}.00</strong></div>
-          <button class="btn btn-lg" type="submit">Continue to payment</button>
+          ${checkoutLine(plan)}
           <div class="msg" id="post-msg" hidden></div>
+          <div id="post-confirm"></div>
         </form>
       </div>`;
 
@@ -882,18 +905,63 @@
       if (!data.title.trim() || !data.location.trim() || !data.summary.trim()) {
         return showMsg(msg, "Add a job title, location and summary.", true);
       }
-      if (state.demo) return showMsg(msg, `Preview mode: on the live site this opens Stripe Checkout for ${PRICE}/month.`, false);
+      if (state.demo) return showMsg(msg, `Preview mode: on the live site this opens Stripe Checkout for ${fmtMoney(PLAN.base_cents)}/month.`, false);
       const btn = form.querySelector("button[type=submit]");
       btn.disabled = true;
+      // They've seen the upgrade price on the button, so that counts as confirming it.
+      data.confirm_upgrade = btn.dataset.upgrade === "1";
       try {
         const r = await api("/api/checkout", { method: "POST", auth: true, body: JSON.stringify(data) });
-        location.href = r.url;
+        if (r.url) { location.href = r.url; return; }
+        if (r.needs_confirm) return askUpgrade(r, form);
+        postedLive(r);
       } catch (err) {
         if (err.status === 401) return signedOut(err.message);
-        showMsg(msg, err.message, true);
+        showMsg(msg, err.message + (err.status === 402 ? " Your posting is saved, unpublished, in your dashboard." : ""), true);
         btn.disabled = false;
       }
     });
+  }
+
+  // The bottom of the post form: what this posting will cost, given the plan.
+  function checkoutLine(plan) {
+    if (!plan?.live) {
+      return `<div class="checkout-line"><span>Starts your plan · due today, then monthly · covers up to ${PLAN.base_limit} postings</span><strong>${fmtMoney(PLAN.base_cents)}</strong></div>
+        <button class="btn btn-lg" type="submit">Continue to payment</button>`;
+    }
+    const next = plan.active_postings + 1;
+    const upgrade = next > plan.paid_postings && planCost(next) > planCost(plan.paid_postings);
+    if (upgrade) {
+      return `<div class="checkout-line upgrade"><span>This will be live posting ${next}, so your plan moves to <b>${fmtMoney(planCost(next))}/month</b>. The prorated difference for the rest of this month is charged today.</span><strong>${fmtMoney(planCost(next))}/mo</strong></div>
+        <button class="btn btn-lg" type="submit" data-upgrade="1">Publish and upgrade plan</button>`;
+    }
+    return `<div class="checkout-line"><span>Included in your plan · live posting ${next}${next <= PLAN.base_limit ? ` of ${PLAN.base_limit}` : next <= PLAN.plus_limit ? ` of ${PLAN.plus_limit}` : ""}</span><strong>No extra charge</strong></div>
+      <button class="btn btn-lg" type="submit">Publish posting</button>`;
+  }
+
+  // The server says this posting would move the plan up a tier (the count changed since the page loaded).
+  function askUpgrade(r, form) {
+    const box = document.getElementById("post-confirm");
+    box.innerHTML = `<div class="panel upgrade-ask">
+      <p><b>This makes ${r.count} live postings.</b> Your plan moves from ${fmtMoney(r.from_cents)} to <b>${fmtMoney(r.to_cents)}/month</b>, and the prorated difference for the rest of this month is charged today.</p>
+      <div class="cta-row"><button class="btn" type="button" id="up-yes">Publish and upgrade</button>
+        <button class="linkish" type="button" id="up-no">Not now — keep it unpublished</button></div></div>`;
+    box.querySelector("#up-yes").addEventListener("click", async (e) => {
+      e.target.disabled = true;
+      try { postedLive(await api(`/api/employer/jobs/${r.job_id}/publish`, { method: "POST", auth: true, body: JSON.stringify({ confirm: true }) })); }
+      catch (err) { e.target.disabled = false; showMsg(document.getElementById("post-msg"), err.message, true); }
+    });
+    box.querySelector("#up-no").addEventListener("click", () => {
+      state.pendingFlash = ["Saved, not published. Publish it from Postings when you're ready."];
+      state.dashTab = "postings"; location.hash = "dashboard";
+    });
+    form.querySelector("button[type=submit]").disabled = true;
+  }
+
+  function postedLive(r) {
+    state.pendingFlash = [`Your posting is live.${r.upgraded ? ` Your plan is now ${fmtMoney(r.monthly_cents)}/month.` : ""}`];
+    state.dashTab = "postings";
+    loadJobs().finally(() => { location.hash = "dashboard"; });
   }
 
   // ---------- after checkout ----------
@@ -985,7 +1053,8 @@
       const live = r.job && r.job.status === "open";
       box.innerHTML = `
         <h2>Thanks, ${esc(r.company)}. ${live ? "Your job is live." : "Payment received."}</h2>
-        ${r.job ? `<p><b>${esc(r.job.title)}</b> ${live ? "is now listed as a Direct posting and renews monthly until you cancel it." : "will appear as soon as Stripe confirms the payment."}</p>` : ""}
+        ${r.job ? `<p><b>${esc(r.job.title)}</b> ${live ? "is now listed as a Direct posting." : "will appear as soon as Stripe confirms the payment."}</p>` : ""}
+        ${r.plan ? `<p>Your hiring plan is active: ${esc(planSentence())} New postings go live right away from now on. It renews monthly until you cancel it.</p>` : ""}
         <p>Applicants will arrive in your dashboard and by email. Sign in from any device with your email and password.</p>
         <div class="cta-row">
           <a class="btn" href="#dashboard">Go to dashboard</a>
@@ -999,10 +1068,10 @@
 
   // ---------- dashboard ----------
   function jobStatus(j) {
-    if (j.status === "pending") return { label: "Awaiting payment", bad: true };
-    if (j.status === "closed") return { label: "Closed", bad: true };
+    if (j.status === "pending") return { label: "Not live yet", bad: true };
+    if (j.status === "closed") return { label: j.closed_by === "admin" ? "Taken down" : "Closed", bad: true };
     if (j.cancel_at_period_end) return { label: `Ends ${fmtDate(j.paid_through)}`, bad: true };
-    return { label: j.paid_through ? `Renews ${fmtDate(j.paid_through)}` : "Live", bad: false };
+    return { label: "Live", bad: false };
   }
 
   function signedOut(message) {
@@ -1101,14 +1170,15 @@
         <section class="panel first-run">
           <h2>Welcome${first ? `, ${esc(first)}` : ""}</h2>
           <p>This is where your postings, applicants and billing live. Post your first job — the AI assistant can write it from just the title — and applications show up here and in your inbox.</p>
-          <a class="btn btn-lg" href="#post">Post your first job · ${PRICE}/mo</a>
+          <p class="source-note">${esc(planSentence())}</p>
+          <a class="btn btn-lg" href="#post">Post your first job</a>
         </section>`}
         <div class="kpis">
           <div class="kpi"><strong>${s.live_postings}</strong><span>live ${s.live_postings === 1 ? "posting" : "postings"}</span></div>
           <div class="kpi"><strong>${s.applicants}</strong><span>applicants${s.new_applicants ? ` · <b>${s.new_applicants} new</b>` : ""}</span></div>
           <div class="kpi"><strong>${s.applicants_7d}</strong><span>in the last 7 days</span></div>
           <div class="kpi"><strong>${s.views.toLocaleString()}</strong><span>views of live postings</span></div>
-          <div class="kpi"><strong>${fmtMoney(s.monthly_cents)}</strong><span>per month (${s.renewing} renewing)</span></div>
+          <div class="kpi"><strong>${d.plan.live ? fmtMoney(s.monthly_cents) : "—"}</strong><span>${d.plan.live ? (d.plan.cancel_at_period_end ? "plan ending" : `next bill · ${esc(fmtDate(d.plan.paid_through))}`) : "no active plan"}</span></div>
         </div>
         ${d.attention.length ? `<section class="panel attention">
           <h2 class="dash-title">Needs your attention</h2>
@@ -1138,8 +1208,28 @@
     }
 
     // ----- Postings -----
+    // The hiring plan: where they are on the price ladder, what's billed, and end/keep.
+    function planPanel() {
+      const p = d.plan;
+      if (!p.live) {
+        return `<section class="panel plan-panel"><div><h2 class="dash-title">Hiring plan</h2>
+          <p>No active plan. Your next posting starts one in Stripe Checkout. ${esc(planSentence())}</p></div>${planLadder()}</section>`;
+      }
+      const cap = p.active_postings <= PLAN.base_limit ? PLAN.base_limit : p.active_postings <= PLAN.plus_limit ? PLAN.plus_limit : null;
+      return `<section class="panel plan-panel"><div>
+          <h2 class="dash-title">Hiring plan</h2>
+          <p class="plan-use"><b>${p.active_postings}${cap ? ` of ${cap}` : ""}</b> live postings</p>
+          <p class="source-note">Paid this month: ${fmtMoney(p.this_month_cents)}${p.paid_postings > p.active_postings ? ` (covers up to ${p.paid_postings} postings until ${esc(fmtDate(p.paid_through))})` : ""}.
+            ${p.cancel_at_period_end ? `<b>Ends ${esc(fmtDate(p.paid_through))}</b>; your postings come down then.` : `Next bill ${fmtMoney(p.next_bill_cents)} on ${esc(fmtDate(p.paid_through))}.`}</p>
+          <div class="cta-row">${p.cancel_at_period_end
+            ? `<button class="btn secondary" type="button" data-plan="resume">Keep my plan</button>`
+            : `<button class="linkish danger" type="button" data-plan="cancel">Cancel plan</button>`}</div>
+        </div>${planLadder(p.active_postings)}</section>`;
+    }
+
     function tabPostings(body) {
       body.innerHTML = `
+        ${planPanel()}
         <div class="table-wrap"><table class="stack-table">
           <thead><tr><th>Job</th><th>Status</th><th class="num">Views</th><th class="num">Applicants</th><th class="num">Apply rate</th><th>Actions</th></tr></thead>
           <tbody>${d.jobs.length ? d.jobs.map((j) => {
@@ -1149,9 +1239,9 @@
             if (j.status !== "closed") acts.push(`<a href="#edit-${j.id}">Edit</a>`);
             acts.push(`<button class="linkish" data-dup="${j.id}" type="button">Duplicate</button>`);
             if (j.applications) acts.push(`<button class="linkish" data-see-apps="${j.id}" type="button">Applicants</button>`);
-            if (j.status === "pending") acts.push(`<button class="linkish" data-act="pay" data-id="${j.id}" type="button">Finish payment</button>`);
-            else if (j.status === "open" && j.cancel_at_period_end) acts.push(`<button class="linkish" data-act="resume" data-id="${j.id}" type="button">Keep renewing</button>`);
-            else if (j.status === "open") acts.push(`<button class="linkish danger" data-act="cancel" data-id="${j.id}" type="button">Cancel</button>`);
+            if (j.status === "pending") acts.push(`<button class="linkish" data-act="publish" data-id="${j.id}" type="button">Publish</button>`);
+            else if (j.status === "open") acts.push(`<button class="linkish danger" data-act="close" data-id="${j.id}" type="button">Close</button>`);
+            else if (j.status === "closed" && j.closed_by !== "admin") acts.push(`<button class="linkish" data-act="publish" data-id="${j.id}" type="button">Reopen</button>`);
             const rate = j.views ? Math.round((j.applications / j.views) * 1000) / 10 + "%" : "—";
             return `<tr>
               <td data-label="Job"><b>${esc(j.title)}</b><br><span class="source-note">${esc(j.location)} · posted ${esc(fmtDate(j.posted_at))}</span></td>
@@ -1162,14 +1252,33 @@
               <td data-label="Actions" class="acts">${acts.join(" ")}</td></tr>`;
           }).join("") : `<tr><td colspan="6" class="source-note">No postings yet. <a href="#post">Post your first job</a>.</td></tr>`}</tbody>
         </table></div>
-        <p class="source-note">Each posting is ${PRICE}/month and renews until you cancel; a cancelled posting stays live through the month you've paid for. <b>Duplicate</b> starts a new posting pre-filled from an old one.</p>`;
+        <p class="source-note">${esc(planSentence())} <b>Close</b> takes a posting down right away; your next bill adjusts automatically and this month isn't refunded, so reopening or posting a replacement this month costs nothing more. <b>Duplicate</b> starts a new posting pre-filled from an old one.</p>`;
       body.querySelectorAll("[data-act]").forEach((b) => b.addEventListener("click", async () => {
-        if (b.dataset.act === "cancel" && !confirmInline(b, "Stop renewing? It stays live until the paid month ends.")) return;
+        if (b.dataset.act === "close" && !confirmInline(b, "Close this posting? It comes off the site now. Your next bill drops to match; this month isn't refunded.")) return;
+        const confirm = b.dataset.upgradeArmed === "1";
         b.disabled = true;
         try {
-          const r = await api(`/api/employer/jobs/${b.dataset.id}/${b.dataset.act}`, { method: "POST", auth: true });
+          const r = await api(`/api/employer/jobs/${b.dataset.id}/${b.dataset.act}`, { method: "POST", auth: true, body: JSON.stringify({ confirm }) });
           if (r.url) { location.href = r.url; return; }
+          if (r.needs_confirm) {
+            // Moving up a tier: say what it costs, and make the next click the confirmation.
+            b.disabled = false;
+            b.dataset.upgradeArmed = "1";
+            b.textContent = `Confirm: publish at ${fmtMoney(r.to_cents)}/mo`;
+            say(`This makes ${r.count} live postings, so your plan moves from ${fmtMoney(r.from_cents)} to ${fmtMoney(r.to_cents)}/month. The prorated difference for the rest of this month is charged today. Click again to confirm.`);
+            return;
+          }
           await loadJobs();
+          state.pendingFlash = r.upgraded ? [`Published. Your plan is now ${fmtMoney(r.monthly_cents)}/month.`] : null;
+          viewDashboard("postings");
+          if (state.pendingFlash) { const [t] = state.pendingFlash; state.pendingFlash = null; flash(t); }
+        } catch (err) { b.disabled = false; say(err.message); }
+      }));
+      body.querySelectorAll("[data-plan]").forEach((b) => b.addEventListener("click", async () => {
+        if (b.dataset.plan === "cancel" && !confirmInline(b, `Cancel your plan? It runs until ${fmtDate(d.plan.paid_through)}, then all your postings come down.`)) return;
+        b.disabled = true;
+        try {
+          await api(`/api/employer/plan/${b.dataset.plan}`, { method: "POST", auth: true });
           viewDashboard("postings");
         } catch (err) { b.disabled = false; say(err.message); }
       }));
@@ -1622,8 +1731,9 @@
         <p class="source-note" id="act-msg" aria-live="polite"></p>
         <div class="figures-grid admin-figures">
           <div><strong>${fmtMoney(d.mrr_cents)}</strong><span>monthly recurring revenue</span></div>
-          <div><strong>${d.paid_live}</strong><span>paid postings live (${d.renewing} renewing)</span></div>
-          <div><strong>${d.unpaid}</strong><span>started, not paid</span></div>
+          <div><strong>${d.live_plans}</strong><span>hiring plans live (${d.renewing_plans} renewing)</span></div>
+          <div><strong>${d.paid_live}</strong><span>employer postings live</span></div>
+          <div><strong>${d.unpaid}</strong><span>saved, not published</span></div>
           <div><strong>${d.sourced_live}</strong><span>sourced listings live</span></div>
           <div><strong>${d.employer_count}</strong><span>paying employers</span></div>
           <div><strong>${d.applications_7d}</strong><span>applications this week (${d.applications} total)</span></div>
@@ -1631,6 +1741,18 @@
           <div><strong>${d.open_jobs}</strong><span>jobs on the board</span></div>
           <div><strong>${((d.directory?.banks || 0) + (d.directory?.credit_unions || 0)).toLocaleString()}</strong><span>institutions in the directory (${d.directory?.banks || 0} banks, ${d.directory?.credit_unions || 0} CUs)</span></div>
         </div>
+        <section class="panel billing-setup">
+          <h2>Billing setup</h2>
+          ${d.billing?.plan ? `<p>Hiring plan in Stripe: <b>${fmtMoney(d.billing.plan.base_cents)}</b>/month up to ${d.billing.plan.base_limit} postings, <b>${fmtMoney(d.billing.plan.plus_cents)}</b> up to ${d.billing.plan.plus_limit}, and <b>+${fmtMoney(d.billing.plan.extra_cents)}</b> for each posting over ${d.billing.plan.plus_limit}.</p>`
+            : `<p class="msg error">Billing isn't set up yet, so employers can't post. Choose the price for each posting over 10 and create the plan in Stripe.</p>`}
+          ${d.billing?.error ? `<p class="msg error">Stripe: ${esc(d.billing.error)}</p>` : ""}
+          <form class="form inline-form" id="billing-form" novalidate>
+            <div class="field"><label for="bill-extra">${d.billing?.plan ? "Change the" : "The"} monthly price for each posting over 10 (USD)</label>
+              <input id="bill-extra" type="number" min="1" max="1000" step="0.01" inputmode="decimal" value="${d.billing?.plan ? (d.billing.plan.extra_cents / 100).toFixed(2) : ""}" required></div>
+            <button class="btn${d.billing?.plan ? " secondary" : ""}" type="submit">${d.billing?.plan ? "Create a new plan price" : "Create the plan in Stripe"}</button>
+          </form>
+          <p class="source-note">${d.billing?.plan ? "A new price applies to plans started from now on; existing plans keep the price they started with." : "This creates one monthly price in your Stripe account: $99 for up to 5 postings, $159.99 for up to 10, plus this amount for each one over 10."}</p>
+        </section>
         <div class="cta-row" style="margin:0.5rem 0 1rem">
           <button class="btn secondary" id="sync-dir" type="button">${(d.directory?.banks || 0) ? "Refresh" : "Load"} the institution directory (FDIC + NCUA)</button>
           <span class="source-note">Pulls every active US bank and credit union from public data. Takes a few minutes; leave the tab open.</span>
@@ -1668,9 +1790,11 @@
           <section class="panel">
             <h2>Employers</h2>
             <div class="table-wrap"><table class="stack-table">
-              <thead><tr><th>Employer</th><th style="text-align:right">Live</th><th>Since</th></tr></thead>
-              <tbody>${d.employers.length ? d.employers.map((e) => `<tr><td>${esc(e.company)}<br><span class="source-note">${esc(e.email)}</span></td><td class="num">${e.live_postings}</td><td class="num">${esc(fmtDate(e.created_at))}</td></tr>`).join("")
-                : `<tr><td colspan="3" class="source-note">No paying employers yet.</td></tr>`}</tbody>
+              <thead><tr><th>Employer</th><th style="text-align:right">Live</th><th>Plan</th><th>Since</th></tr></thead>
+              <tbody>${d.employers.length ? d.employers.map((e) => `<tr><td>${esc(e.company)}<br><span class="source-note">${esc(e.email)}</span></td><td class="num">${e.live_postings}</td>
+                <td>${e.plan ? `${e.plan.monthly_cents != null ? fmtMoney(e.plan.monthly_cents) + "/mo" : "Live"}${e.plan.renewing ? "" : " · ending"}` : `<span class="source-note">None</span>`}</td>
+                <td class="num">${esc(fmtDate(e.created_at))}</td></tr>`).join("")
+                : `<tr><td colspan="4" class="source-note">No employers yet.</td></tr>`}</tbody>
             </table></div>
           </section>
         </div>
@@ -1701,6 +1825,18 @@
       document.getElementById("act-msg").textContent =
         `Directory synced: ${totals.fdic.toLocaleString()} banks and ${totals.ncua.toLocaleString()} credit unions imported or refreshed.`;
     });
+    document.getElementById("billing-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const extra = Number(document.getElementById("bill-extra").value);
+      if (!(extra >= 1 && extra <= 1000)) return say("Enter a price between $1 and $1,000.");
+      const btn = e.currentTarget.querySelector("button");
+      btn.disabled = true;
+      try {
+        await api("/api/admin/billing/plan", { method: "POST", admin: true, body: JSON.stringify({ extra_dollars: extra }) });
+        await loadPlan(); await viewAdmin();
+        say("Plan price created in Stripe. Employers can post now.");
+      } catch (err) { btn.disabled = false; say(err.message); }
+    });
     document.getElementById("run-maint").addEventListener("click", async (e) => {
       e.target.disabled = true; say("Checking listings. This can take up to a minute…");
       try {
@@ -1714,7 +1850,7 @@
       b.addEventListener("click", async () => {
         if (b.dataset.admin === "close" && !armed) {
           armed = true;
-          b.textContent = b.dataset.direct === "true" ? "Confirm: take down and cancel billing" : "Confirm take down";
+          b.textContent = "Confirm take down";
           return;
         }
         b.disabled = true;
@@ -2210,5 +2346,5 @@
     if (c.closest(".home-hero")) drawGuilloche(c, { x: 0.86, scale: 0.7, max: 300, alpha: 0.11 });
     else drawGuilloche(c);
   });
-  Promise.all([loadJobs(), handleEmailLinks()]).then(route);
+  Promise.all([loadJobs(), loadPlan(), handleEmailLinks()]).then(route);
 })();

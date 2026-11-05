@@ -41,7 +41,6 @@ export function stripe() {
   return _stripe;
 }
 
-export const PRICE_CENTS = 9900;
 export const BRAND = "BankJobz";
 
 export const json = (data, status = 200) =>
@@ -203,25 +202,6 @@ export async function syncJobFromSubscription(sub, jobId) {
       : [sub.id, status, through, !!sub.cancel_at_period_end, expires]
   );
   return rows[0] || null;
-}
-
-// Starts a Stripe Checkout session for one job posting ($99/month price in STRIPE_PRICE_ID).
-export async function createJobCheckout(req, employer, jobId) {
-  if (!process.env.STRIPE_PRICE_ID) throw new Error("Billing isn't configured yet (STRIPE_PRICE_ID).");
-  const base = siteUrl(req);
-  const meta = { employer_id: String(employer.id), job_id: String(jobId) };
-  const session = await stripe().checkout.sessions.create({
-    mode: "subscription",
-    line_items: [{ price: process.env.STRIPE_PRICE_ID, quantity: 1 }],
-    client_reference_id: String(employer.id),
-    ...(employer.stripe_customer_id ? { customer: employer.stripe_customer_id } : { customer_email: employer.email }),
-    subscription_data: { metadata: meta, description: `Job posting #${jobId}` },
-    metadata: meta,
-    allow_promotion_codes: true,
-    success_url: `${base}/?session_id={CHECKOUT_SESSION_ID}#welcome`,
-    cancel_url: `${base}/#post`,
-  });
-  return session.url;
 }
 
 // Resolves the candidate from "Authorization: Bearer ck_…". Returns null when missing or unknown.

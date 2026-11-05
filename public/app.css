@@ -539,3 +539,28 @@ tr.is-new td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 /* Footer: stacked lines read better than side-by-side with the disclaimer */
 .site-foot .wrap { flex-direction: column; gap: 0.45rem; justify-content: flex-start; }
 .site-foot a { color: var(--muted); }
+
+/* ---------- hiring plan ---------- */
+.ladder { list-style: none; margin: 0.75rem 0; padding: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.ladder li { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; padding: 0.55rem 0.8rem; border-top: 1px solid var(--line); font-size: 0.92rem; }
+.ladder li:first-child { border-top: 0; }
+.ladder li b { font-family: var(--font-mono); font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ladder li b small { font-weight: 400; color: var(--muted); margin-left: 1px; }
+.ladder li.on { background: var(--accent-soft); box-shadow: inset 3px 0 0 var(--accent); }
+.price-card ul.ladder { padding: 0; display: block; margin: 0; }
+.plan-panel { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: 1.25rem; align-items: start; margin-bottom: 1.25rem; }
+.plan-panel p { margin: 0.25rem 0; }
+.plan-panel .plan-use { font-size: 1.15rem; }
+.plan-panel .plan-use b { font-family: var(--font-mono); font-size: 1.5rem; }
+.plan-panel .cta-row { margin-top: 0.6rem; }
+.plan-panel .ladder { margin: 0; }
+.checkout-line.upgrade { border: 1px solid var(--accent); border-radius: var(--radius); background: var(--accent-soft); padding: 0.75rem; gap: 1rem; color: var(--fg); font-family: var(--font-body); }
+.checkout-line.upgrade span { max-width: 46ch; }
+.upgrade-ask { margin-top: 0.75rem; border-color: var(--accent); }
+.upgrade-ask p { margin: 0 0 0.75rem; }
+.billing-setup { margin: 1rem 0; }
+.billing-setup .inline-form { display: flex; gap: 0.75rem; align-items: end; flex-wrap: wrap; }
+.billing-setup .inline-form .field { flex: 1 1 18rem; margin: 0; }
+@media (max-width: 720px) {
+  .plan-panel { grid-template-columns: 1fr; }
+}

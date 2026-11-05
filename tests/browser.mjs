@@ -131,6 +131,8 @@ try {
     && (await emp.inputValue("#p-desc")).includes("What you'll bring"));
   await emp.fill("#p-summary", "Own the enterprise data model across core, lending and call reporting.");
   await shot(emp, "03-post-form");
+  check("the first posting's checkout line explains the plan", (await emp.textContent(".checkout-line")).includes("covers up to 5 postings")
+    && (await emp.textContent(".checkout-line strong")) === "$99");
   await emp.click("text=Continue to payment");
   await emp.waitForSelector("#welcome h2:has-text('Your job is live')", { timeout: 15000 });
   check("Stripe checkout returns to a 'job is live' page with no keys to copy", (await emp.locator("#the-key").count()) === 0);
@@ -140,7 +142,42 @@ try {
   check("overview shows the live posting", (await emp.textContent(".kpis")).includes("1live posting"));
   await emp.click("[data-dtab=postings]");
   await emp.waitForSelector("td:has-text('Senior Data Architect')");
-  check("postings tab shows it renewing", (await emp.textContent(".stack-table .status-pill")).startsWith("Renews"));
+  check("postings tab shows it live", (await emp.textContent(".stack-table .status-pill")) === "Live");
+  check("…under a plan panel: 1 of 5 live postings, next bill $99", (await emp.textContent(".plan-panel .plan-use")).includes("1 of 5")
+    && (await emp.textContent(".plan-panel")).includes("Next bill $99") && (await emp.locator(".plan-panel .ladder li.on").count()) === 1);
+
+  // Postings 2–5 go straight live; the 6th shows the new price on the button before charging.
+  const empKey = await emp.evaluate(() => localStorage.getItem("bankstack.key"));
+  for (let i = 2; i <= 5; i++) {
+    const res = await fetch(`${BASE}/api/checkout`, { method: "POST", headers: { authorization: `Bearer ${empKey}`, "content-type": "application/json" },
+      body: JSON.stringify({ title: `Teller ${i}`, location: "Florence, AL", category: "branch-retail", summary: "Serve members at the Florence branch." }) });
+    const out = await res.json();
+    if (!out.live) check(`posting ${i} goes live under the plan`, false, out);
+  }
+  await emp.goto(BASE + "/#post");
+  await emp.waitForSelector("#post-form");
+  check("with 5 live, the post form says the 6th moves the plan to $159.99", (await emp.textContent(".checkout-line")).includes("$159.99/month")
+    && (await emp.textContent("#post-form button[type=submit]")) === "Publish and upgrade plan");
+  await emp.fill("#p-title", "Universal Banker");
+  await emp.fill("#p-location", "Muscle Shoals, AL");
+  await emp.selectOption("#p-cat", "branch-retail");
+  await emp.fill("#p-summary", "Open accounts, process loans and help members at our busiest branch.");
+  await shot(emp, "03b-post-upgrade");
+  await emp.click("#post-form button[type=submit]");
+  await emp.waitForSelector(".plan-panel");
+  check("publishing the 6th lands on Postings with the new price", (await emp.textContent("#flash")).includes("$159.99/month")
+    && (await emp.textContent(".plan-panel .plan-use")).includes("6 of 10"));
+  await shot(emp, "06a-plan-panel");
+  // Closing one: next bill drops, this month stays as paid, and the row offers Reopen.
+  const closeBtn = emp.locator("tr:has-text('Teller 5') [data-act=close]");
+  await closeBtn.click();
+  await closeBtn.click();
+  await emp.waitForSelector("tr:has-text('Teller 5') [data-act=publish]");
+  check("closing a posting drops the next bill to $99 and offers Reopen", (await emp.textContent(".plan-panel")).includes("Next bill $99")
+    && (await emp.textContent(".plan-panel")).includes("covers up to 6 postings"));
+  await emp.click("tr:has-text('Teller 5') [data-act=publish]");
+  await emp.waitForSelector("tr:has-text('Teller 5') [data-act=close]");
+  check("reopening it this month needs no confirmation (already paid)", (await emp.textContent(".plan-panel .plan-use")).includes("6 of 10"));
   const jobId = (await stack.sql`SELECT id FROM jobs WHERE title = 'Senior Data Architect'`)[0].id;
   await emp.goto(BASE + "/#jobs");
   await emp.waitForSelector("#f-core");
@@ -230,7 +267,8 @@ try {
   check("employer was emailed", stack.outbox().some((m) => m.to === "hr@shoalsbank.test" && m.subject.includes("Jordan Lee")));
   await cand.click("text=← All positions");
   await cand.waitForSelector(".ledger .job-row");
-  check("nav from a /jobs page goes back to the board", (await cand.locator(".ledger .job-row").count()) === SEED_LEN + 1 && new URL(cand.url()).pathname === "/");
+  const liveOnBoard = (await stack.sql`SELECT COUNT(*)::int n FROM jobs WHERE status = 'open' AND expires_at > now()`)[0].n;
+  check("nav from a /jobs page goes back to the board", (await cand.locator(".ledger .job-row").count()) === liveOnBoard && liveOnBoard === SEED_LEN + 6 && new URL(cand.url()).pathname === "/");
   await cand.locator("#alerts-form .chip-check", { hasText: "Data & analytics" }).click();
   await cand.fill("#al-email", "jordan@example.test");
   await cand.click("text=Send me alerts");
@@ -276,7 +314,7 @@ try {
   await shot(emp, "06-dashboard");
 
   await emp.click("[data-dtab=postings]");
-  await emp.click("td.acts >> text=Edit");
+  await emp.click("tr:has-text('Senior Data Architect') td.acts >> text=Edit");
   await emp.waitForSelector("#edit-form");
   check("edit form is prefilled", (await emp.inputValue("#e-title")) === "Senior Data Architect" && (await emp.inputValue("#e-min")) === "115000");
   await emp.fill("#e-title", "Lead Data Architect");
@@ -284,17 +322,18 @@ try {
   await emp.waitForSelector("#flash:not([hidden])");
   await emp.waitForSelector("td:has-text('Lead Data Architect')");
   check("edit saves and returns to Postings", (await emp.textContent("#flash")).includes("Posting updated"));
-  check("postings show views and apply rate", /\d+%/.test(await emp.textContent("td[data-label='Apply rate']")));
+  check("postings show views and apply rate", /\d+%/.test(await emp.textContent("tr:has-text('Lead Data Architect') td[data-label='Apply rate']")));
 
-  await emp.click("td.acts >> text=Cancel");
-  check("cancel asks for a second click instead of a pop-up", (await emp.textContent("td.acts")).includes("Click again to confirm"));
-  await emp.click("td.acts >> text=Click again to confirm");
-  await emp.waitForSelector(".status-pill:has-text('Ends')");
-  check("cancel posting: shows when it ends, offers Keep renewing", (await emp.locator("text=Keep renewing").count()) === 1);
-  await emp.click("text=Keep renewing");
-  await emp.waitForSelector(".status-pill:has-text('Renews')");
-  check("keep renewing restores it", true);
-  await emp.click("td.acts >> text=Duplicate");
+  await emp.click("[data-plan=cancel]");
+  check("cancelling the plan asks for a second click instead of a pop-up", (await emp.textContent("[data-plan=cancel]")).includes("Click again to confirm"));
+  await emp.click("[data-plan=cancel]");
+  await emp.waitForSelector("[data-plan=resume]");
+  check("a cancelled plan shows when it ends and offers to keep it", (await emp.textContent(".plan-panel")).includes("Ends")
+    && (await emp.locator(".status-pill:has-text('Ends')").count()) === 6);
+  await emp.click("[data-plan=resume]");
+  await emp.waitForSelector("[data-plan=cancel]");
+  check("keep my plan restores it", (await emp.textContent(".plan-panel")).includes("Next bill"));
+  await emp.click("tr:has-text('Lead Data Architect') td.acts >> text=Duplicate");
   await emp.waitForSelector("#post-form");
   check("Duplicate opens a new posting prefilled from the old one", (await emp.inputValue("#p-title")) === "Lead Data Architect"
     && (await emp.inputValue("#p-location")) === "Florence, AL");
@@ -442,7 +481,10 @@ try {
   await adm.fill("#ad-key", "admin_e2e_token");
   await adm.click("text=Open console");
   await adm.waitForSelector(".admin-figures");
-  check("admin figures show $99 MRR from one paid posting", (await adm.textContent(".admin-figures strong")) === "$99");
+  check("admin figures show $159.99 MRR from one plan with 6 postings", (await adm.textContent(".admin-figures strong")) === "$159.99"
+    && (await adm.textContent(".admin-figures")).includes("1hiring plans live"));
+  check("billing setup shows the plan Stripe is charging", (await adm.textContent(".billing-setup")).includes("+$15")
+    && (await adm.inputValue("#bill-extra")) === "15.00");
   const firstSourced = adm.locator('[data-admin="close"][data-direct="false"]').first();
   await firstSourced.click();
   check("take down asks for confirmation first", (await firstSourced.textContent()).includes("Confirm"));
