@@ -6,7 +6,7 @@ import { aiEnabled } from "../lib/ai.mjs";
 
 const PUBLIC_FIELDS = `id, title, company, institution_type, location, work_mode, employment_type, category,
   salary_min, salary_max, summary, description, apply_url, source_name, source_url, core_systems, licenses,
-  is_featured, posted_at, (employer_id IS NOT NULL) AS direct`;
+  is_featured, posted_at, entry_level, (employer_id IS NOT NULL) AS direct`;
 
 export default async (req, context) => {
   if (req.method !== "GET") return fail("Method not allowed", 405);
@@ -41,6 +41,9 @@ export default async (req, context) => {
   if (p.get("institution_type")) add("institution_type = ?", p.get("institution_type"));
   if (CORE_SYSTEMS[p.get("core_system")]) add("? = ANY(core_systems)", p.get("core_system"));
   if (LICENSES[p.get("license")]) add("? = ANY(licenses)", p.get("license"));
+  // Early careers: ?level=entry (new-grad roles, not internships) or ?level=internship.
+  if (p.get("level") === "internship") where.push("employment_type = 'internship'");
+  if (p.get("level") === "entry") where.push("entry_level AND employment_type <> 'internship'");
 
   const rows = await sql.query(
     `SELECT ${PUBLIC_FIELDS} FROM jobs WHERE ${where.join(" AND ")}

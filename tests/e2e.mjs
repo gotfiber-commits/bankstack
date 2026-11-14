@@ -1165,6 +1165,48 @@ try {
   check("a held license is the first reason on a match", nmlsMatch?.reasons[0] === "You hold NMLS (MLO)", nmlsMatch?.reasons);
 
   // ================================================================
+  section("Early careers: new grads and internships");
+  const { isEntryLevel } = await import("../netlify/lib/shared.mjs");
+  const seedRows = await sql`SELECT id, title, employment_type, entry_level FROM jobs WHERE source_url IS NOT NULL AND employer_id IS NULL`;
+  check("sourced listings are tagged entry level from their title", seedRows.some((j) => j.entry_level)
+    && seedRows.every((j) => j.entry_level === isEntryLevel(j.title, j.employment_type)),
+    seedRows.filter((j) => j.entry_level !== isEntryLevel(j.title, j.employment_type)).map((j) => j.title));
+  check("…teller-type roles in, senior and officer roles out", ["Internal Auditor", "Senior Teller", "Loan Officer", "Analyst II"].every((t) => !isEntryLevel(t))
+    && ["Universal Banker I", "Summer Intern", "Graduate Rotational Program", "Member Service Representative"].every((t) => isEntryLevel(t)));
+  // The database rule (used once to tag listings already live) agrees with the code's rule.
+  const schemaUpdate = readFileSync(new URL("../db/schema.sql", import.meta.url), "utf8").match(/UPDATE jobs SET entry_level = true[\s\S]*?;\n/)[0];
+  await sql`UPDATE jobs SET entry_level = false WHERE employer_id IS NULL`;
+  await sql.query(schemaUpdate);
+  const afterSql = await sql`SELECT title, employment_type, entry_level FROM jobs WHERE employer_id IS NULL`;
+  check("the schema's tagging of existing listings matches the code exactly", afterSql.every((j) => j.entry_level === isEntryLevel(j.title, j.employment_type)),
+    afterSql.filter((j) => j.entry_level !== isEntryLevel(j.title, j.employment_type)).map((j) => j.title));
+
+  r = await postJob(keyA, { ...jobFields, title: "Summer Banking Internship", employment_type: "internship", category: "branch-retail" });
+  const internJob = r.data.job_id;
+  check("an employer posts an internship under their plan", r.data.live === true, r.data);
+  r = await call("GET", `/api/jobs/${internJob}`);
+  check("…and it's early-career even without ticking the box", r.data.entry_level === true && r.data.employment_type === "internship");
+  r = await postJob(keyA, { ...jobFields, title: "Graduate Analyst", entry_level: "on" });
+  const gradJob = r.data.job_id;
+  r = await call("GET", `/api/jobs/${gradJob}`);
+  check("an employer marks a role 'good for new graduates'", r.data.entry_level === true);
+  r = await call("GET", "/api/jobs?level=entry");
+  check("?level=entry: entry-level roles only, no internships", r.data.jobs.length > 1 && r.data.jobs.some((j) => j.id === gradJob)
+    && r.data.jobs.every((j) => j.entry_level && j.employment_type !== "internship"));
+  r = await call("GET", "/api/jobs?level=internship");
+  check("?level=internship: internships only", r.data.jobs.length >= 1 && r.data.jobs.every((j) => j.employment_type === "internship")
+    && r.data.jobs.some((j) => j.id === internJob));
+  r = await call("GET", `/jobs/${gradJob}`);
+  check("an entry-level job page tells Google no experience is needed", String(r.data).includes('"experienceRequirements":"no requirements"'));
+  r = await call("GET", `/jobs/${jobA}`);
+  check("…and other job pages don't", !String(r.data).includes("experienceRequirements"));
+  r = await call("PUT", `/api/employer/jobs/${gradJob}`, { token: keyA, body: { ...jobFields, title: "Graduate Analyst" } });
+  check("unticking the box on edit takes it off the new-grad list", r.status === 200 && (await call("GET", `/api/jobs/${gradJob}`)).data.entry_level === false);
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
+    ...jobFields, title: "Universal Banker I", category: "branch-retail", company: "Cherokee Bank", source_url: `${BASE}/terms.html`, source_name: "Test" } });
+  check("a sourced listing the admin adds is tagged from its title", r.status === 201 && (await call("GET", `/api/jobs/${r.data.id}`)).data.entry_level === true);
+
+  // ================================================================
   section("Talent pool: anonymity, blocking and invites");
   r = await call("GET", "/api/employer/talent", { token: keyB });
   check("pool opens for an employer with a live posting; empty before anyone opts in",

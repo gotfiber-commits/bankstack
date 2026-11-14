@@ -5,7 +5,7 @@
 // POST /api/admin/jobs/:id/reopen     → put a sourced listing back up for 30 days
 // POST /api/admin/maintenance         → run the expiry + dead-link check now
 import {
-  db, stripe, json, fail, safeEqual, validateJob, clean, isUrl, INSTITUTION_TYPES,
+  db, stripe, json, fail, safeEqual, validateJob, clean, isUrl, INSTITUTION_TYPES, isEntryLevel,
   findInstitutionId, isAggregatorUrl,
 } from "../lib/shared.mjs";
 import { runLinkCheck, closeExpired } from "../lib/tasks.mjs";
@@ -114,12 +114,12 @@ export default async (req) => {
     const rows = await sql`
       INSERT INTO jobs (title, company, institution_type, location, work_mode, employment_type, category,
                         salary_min, salary_max, summary, description, apply_url, core_systems, licenses,
-                        institution_id, source_name, source_url, expires_at)
+                        institution_id, source_name, source_url, expires_at, entry_level)
       VALUES (${job.title}, ${company}, ${type}, ${job.location}, ${job.work_mode}, ${job.employment_type},
               ${job.category}, ${job.salary_min}, ${job.salary_max}, ${job.summary}, ${job.description},
               ${sourceUrl}, ${job.core_systems}, ${job.licenses}, ${instId},
               ${clean(b.source_name, 80) || new URL(sourceUrl).hostname}, ${sourceUrl},
-              now() + interval '30 days')
+              now() + interval '30 days', ${job.entry_level || isEntryLevel(job.title, job.employment_type)})
       ON CONFLICT (source_url) DO NOTHING RETURNING id`;
     return rows.length ? json({ ok: true, id: rows[0].id }, 201) : fail("That posting is already on the board.", 409);
   }

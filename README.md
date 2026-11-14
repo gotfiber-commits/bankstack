@@ -20,6 +20,7 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 **Employers**
 - **Employer accounts with MFA**: hiring managers create a free account (name, title, institution, work email, password) and confirm their email with a 6-digit code. Every sign-in on a new device is **password + a second factor** — a 6-digit code by email, or from an authenticator app (Microsoft/Google Authenticator, 1Password) with 10 single-use recovery codes. "Trust this device for 30 days" skips the code on their own computer. Built-in protections: scrypt-hashed passwords, limits counted before every check (8 tries per network; email-wide ceilings of 40 passwords and 10 codes; 15-minute pause), with the owner emailed when a pause starts. Trusted devices and the one-click button in every code email keep working through a pause, so nobody can lock the owner out. Codes are limited to 5 tries and 10 minutes, hashed revocable sessions (30-day max, 14-day idle), security-notice emails on password/MFA changes, and forms that never reveal whether an email has an account. "Employer sign in" is always in the top nav.
 - **Hiring dashboard** with tabs: **Overview** (live postings, applicants, last-7-days, job page views, monthly spend, a clickable hiring pipeline, recent applicants, and postings that need attention — unpaid, ending, or a week with no applicants); **Postings** (views, applicants, apply rate, edit, duplicate, cancel/keep renewing); **Applicants** (search, filter by posting and stage, sort by rating, 1–5 star ratings, private notes, résumé download, CSV export); **Talent pool**; **Account & security** (details, authenticator app setup by QR code, recovery codes, change password, every signed-in device with sign-out, forget trusted devices, applicant-email on/off).
+- **Early careers**: two banners under the home page hero. *New grads* searches entry-level roles (`#new-grads`); *Internships* searches internships (`#internships`), shows the newest internship postings, and gives banks a *Post an internship* button that opens the post form set up as an internship. Employers tick "Good for new college graduates"; internships count automatically; sourced listings are tagged from their title (`isEntryLevel` in `netlify/lib/shared.mjs`, mirrored in `db/schema.sql` for listings already live). Entry-level job pages tell Google no experience is required.
 - **Post a job**: the first posting starts the institution's hiring plan in Stripe Checkout; after that, postings go live instantly under the plan. A posting that moves the plan to a higher price asks first, then charges the prorated difference. Closing postings lowers the next bill (no mid-month refunds), and reopening or replacing within a paid month is free. Postings go live as Direct listings above sourced jobs. Optional banking specifics — the core system the role touches and licenses required — make the posting filterable and boost its match rank for the right candidates.
 - **Talent pool** in the dashboard: browse opted-in candidates anonymously, filter by department, state, core system or license, and invite one to a posting with a note. Included with any live posting.
 - Each posting is its own monthly subscription. **Cancel posting** stops renewal (it stays up through the paid month); **Keep renewing** undoes it.
@@ -59,7 +60,7 @@ netlify/lib/             shared (db, Stripe, validation), banking (core systems,
                          institutions (FDIC/NCUA sync), match, email, files (résumés), extract, tasks
 db/schema.sql            every table; safe to re-run — it upgrades older databases in place
 scripts/seed.mjs         creates the schema and loads the seed jobs
-tests/                   e2e.mjs (335 API checks), browser.mjs (94 checks in real Chromium),
+tests/                   e2e.mjs (347 API checks), browser.mjs (106 checks in real Chromium),
                          fake Stripe, fake FDIC/NCUA, local server
 ```
 
@@ -102,9 +103,9 @@ Both suites run the real function code against a real Postgres database, with a 
 ```bash
 # Postgres on localhost (e.g. docker run -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16)
 export TEST_DATABASE_ADMIN_URL=postgres://postgres@127.0.0.1:5432/postgres
-npm run test:e2e          # 335 checks: posting, hiring-plan billing (tiers, upgrades, closes, renewals, declines), sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
+npm run test:e2e          # 347 checks: posting, early careers, hiring-plan billing (tiers, upgrades, closes, renewals, declines), sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
 npx playwright install chromium
-npm run test:browser      # 94 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
+npm run test:browser      # 106 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
 ```
 
 ## API

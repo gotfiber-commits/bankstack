@@ -149,6 +149,13 @@ export function periodEnd(sub) {
 }
 
 // Validates a job posted by an employer. Returns { job } or { error }.
+// Early careers: does this title read as a role for new graduates? Used to tag sourced listings
+// (employers tick a box instead). Keep in step with the UPDATE in db/schema.sql.
+const ENTRY_YES = /(\bintern(ship)?s?\b|trainee|apprentice|entry[- ]level|new grad|graduate|junior|\bjr\b|rotational|teller|universal banker|member service|customer service|personal banker|deposit servicer|loan servicing|hire ahead|staff accountant|\bassociate\b|\b(analyst|specialist|representative|banker|clerk|processor|technician) i\b)/i;
+const ENTRY_NO = /(senior|\bsr\b|lead|manager|director|vice president|\bvp\b|\bavp\b|head of|principal|chief|controller|officer|\bii\b|\biii\b)/i;
+export const isEntryLevel = (title, employmentType) =>
+  employmentType === "internship" || (ENTRY_YES.test(String(title || "")) && !ENTRY_NO.test(String(title || "")));
+
 export function validateJob(b) {
   const num = (v) => {
     const n = Number(String(v ?? "").replace(/[^\d.]/g, ""));
@@ -168,6 +175,8 @@ export function validateJob(b) {
     core_systems: cleanCoreSystems(b.core_systems),
     licenses: cleanLicenses(b.licenses),
   };
+  // Internships are always early-career; otherwise it's the employer's "good for new grads" box.
+  job.entry_level = job.employment_type === "internship" || b.entry_level === true || b.entry_level === "on" || b.entry_level === "true";
   if (!job.title) return { error: "Add a job title." };
   if (!job.location) return { error: "Add a location." };
   if (!CATEGORIES.includes(job.category)) return { error: "Pick a department." };

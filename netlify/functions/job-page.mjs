@@ -26,6 +26,8 @@ function jobPostingLd(job, base) {
     directApply: !job.apply_url,
     url: `${base}/jobs/${job.id}`,
   };
+  // Early-career roles: tell Google no prior experience is needed (Google's "no requirements" form).
+  if (job.entry_level) ld.experienceRequirements = "no requirements";
   if (job.work_mode === "remote") {
     ld.jobLocationType = "TELECOMMUTE";
     ld.applicantLocationRequirements = { "@type": "Country", name: "USA" };

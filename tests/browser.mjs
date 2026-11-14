@@ -494,6 +494,70 @@ try {
   check("confirmed take down closes the listing", closed === 1);
   await shot(adm, "11-admin");
 
+  // ============================================================
+  section("Early careers: new grads and internships");
+  const grad = await newPage();
+  await grad.goto(BASE + "/");
+  await grad.waitForSelector(".early-card");
+  const entryCount = (await stack.sql`SELECT COUNT(*)::int n FROM jobs WHERE status = 'open' AND expires_at > now() AND entry_level AND employment_type <> 'internship'`)[0].n;
+  check("home has the new-grads and internships banners, right under the hero", (await grad.locator(".early-card").count()) === 2
+    && await grad.evaluate(() => document.querySelector(".home-hero").nextElementSibling.classList.contains("early")));
+  check("…the new-grads banner counts the entry-level roles", (await grad.textContent(".early-card >> nth=0")).includes(`${entryCount} entry-level roles`), entryCount);
+  await grad.fill('form[data-early="new-grads"] input', "universal");
+  await grad.click('form[data-early="new-grads"] button');
+  await grad.waitForSelector("h1:has-text('Entry-level jobs for new graduates')");
+  const gradRows = await grad.locator(".ledger .job-row").count();
+  check("searching from the banner opens the new-grads page with the search applied", gradRows > 0
+    && (await grad.inputValue("#f-q")) === "universal" && (await grad.inputValue("#f-level")) === "entry");
+  check("…every result is tagged Entry level", (await grad.locator(".ledger .job-row .tag.early:has-text('Entry level')").count()) === gradRows);
+  await shot(grad, "12-new-grads");
+  await grad.click("nav >> text=Current positions");
+  await grad.waitForSelector("h1:has-text('Current positions')");
+  const liveAll = (await stack.sql`SELECT COUNT(*)::int n FROM jobs WHERE status = 'open' AND expires_at > now()`)[0].n;
+  check("going to Current positions shows everything again", (await grad.inputValue("#f-level")) === "" && (await grad.inputValue("#f-q")) === ""
+    && (await grad.locator(".ledger .job-row").count()) === liveAll);
+
+  // A bank posts an internship from the home banner.
+  await emp.goto(BASE + "/");
+  await emp.waitForSelector("[data-post-internship]");
+  await emp.click(".early [data-post-internship]");
+  await emp.waitForSelector("#post-form");
+  check("'Post an internship' opens the form set up as an internship", (await emp.inputValue("#p-emp")) === "internship"
+    && await emp.isChecked("#p-entry") && (await emp.textContent("#post-form h2")) === "The internship");
+  await emp.fill("#p-title", "Summer Banking Internship");
+  await emp.fill("#p-location", "Florence, AL");
+  await emp.selectOption("#p-cat", "branch-retail");
+  await emp.fill("#p-summary", "Ten weeks across our branches, lending and operations teams, with a capstone project.");
+  await emp.click("#post-form button[type=submit]");
+  await emp.waitForSelector(".plan-panel");
+  check("the internship goes live under the plan", (await emp.textContent("#flash")).includes("Your posting is live"));
+  await grad.goto(BASE + "/");
+  await grad.reload();
+  await grad.waitForSelector(".intern-ads.interns");
+  check("the internships banner shows it, marked Direct", (await grad.textContent(".intern-ads.interns")).includes("Summer Banking Internship")
+    && (await grad.locator(".intern-ads.interns .tag.direct").count()) >= 1);
+  await grad.evaluate(() => window.scrollTo(0, 0));
+  await grad.screenshot({ path: `${SHOTS}/01b-early-careers.png`, fullPage: true, clip: { x: 0, y: 560, width: 1280, height: 640 } });
+  await grad.click('form[data-early="internships"] button');
+  await grad.waitForSelector("h1:has-text('Banking internships')");
+  check("Find internships lists only internships", (await grad.locator(".ledger .job-row").count()) === 1
+    && (await grad.textContent(".ledger")).includes("Summer Banking Internship") && (await grad.locator(".hero [data-post-internship]").count()) === 1);
+  await shot(grad, "13-internships");
+  // Typing a new-grad box when choosing Internship.
+  await emp.goto(BASE + "/#post");
+  await emp.waitForSelector("#p-entry");
+  check("the new-grads box starts unticked for an ordinary posting", !(await emp.isChecked("#p-entry")));
+  await emp.selectOption("#p-emp", "internship");
+  check("…and choosing Internship ticks it", await emp.isChecked("#p-entry"));
+
+  const phoneHome = await newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  await phoneHome.goto(BASE + "/");
+  await phoneHome.waitForSelector(".early-card");
+  const phoneOverflow = await phoneHome.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) > window.innerWidth + 1);
+  const stacked = await phoneHome.evaluate(() => { const [a, b] = document.querySelectorAll(".early-card"); return b.getBoundingClientRect().top >= a.getBoundingClientRect().bottom; });
+  check("on a phone the banners stack, with no sideways scrolling", stacked && !phoneOverflow);
+  await shot(phoneHome, "14-early-phone");
+
   check("no JavaScript errors on any page", pageErrors.length === 0, pageErrors.join(" | "));
 } catch (err) {
   failed++;

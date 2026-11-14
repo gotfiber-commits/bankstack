@@ -419,7 +419,8 @@ export default async (req) => {
       UPDATE jobs SET title = ${v.title}, location = ${v.location}, work_mode = ${v.work_mode},
         employment_type = ${v.employment_type}, category = ${v.category}, salary_min = ${v.salary_min},
         salary_max = ${v.salary_max}, summary = ${v.summary}, description = ${v.description},
-        apply_url = ${v.apply_url}, core_systems = ${v.core_systems}, licenses = ${v.licenses}, updated_at = now()
+        apply_url = ${v.apply_url}, core_systems = ${v.core_systems}, licenses = ${v.licenses},
+        entry_level = ${v.entry_level}, updated_at = now()
       WHERE id = ${job.id}`;
     return json({ ok: true });
   }

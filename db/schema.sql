@@ -299,3 +299,13 @@ ALTER TABLE employers ADD COLUMN IF NOT EXISTS billing_lock_at      TIMESTAMPTZ;
 CREATE UNIQUE INDEX IF NOT EXISTS employers_plan_sub_idx ON employers (plan_subscription_id) WHERE plan_subscription_id IS NOT NULL;
 -- Who took a posting down: employer | plan | expired | admin. Only admin take-downs can't be reopened.
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS closed_by TEXT;
+
+-- Early careers: roles suited to new college graduates. Employers tick a box; sourced listings are
+-- tagged from their title (the same rule as isEntryLevel in netlify/lib/shared.mjs). Internships
+-- (employment_type = 'internship') are always early-career.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS entry_level BOOLEAN NOT NULL DEFAULT false;
+UPDATE jobs SET entry_level = true
+WHERE employer_id IS NULL AND entry_level = false
+  AND (employment_type = 'internship'
+       OR (title ~* '(\mintern(ship)?s?\M|trainee|apprentice|entry[- ]level|new grad|graduate|junior|\mjr\M|rotational|teller|universal banker|member service|customer service|personal banker|deposit servicer|loan servicing|hire ahead|staff accountant|\massociate\M|\m(analyst|specialist|representative|banker|clerk|processor|technician) i\M)'
+           AND title !~* '(senior|\msr\M|lead|manager|director|vice president|\mvp\M|\mavp\M|head of|principal|chief|controller|officer|\mii\M|\miii\M)'));

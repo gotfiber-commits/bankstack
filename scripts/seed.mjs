@@ -1,7 +1,7 @@
 // Creates or upgrades the schema and loads the sourced listings from public/seed-jobs.json.
 // Usage: DATABASE_URL=postgres://... npm run db:seed
 import { readFile } from "node:fs/promises";
-import { db } from "../netlify/lib/shared.mjs";
+import { db, isEntryLevel } from "../netlify/lib/shared.mjs";
 
 if (!process.env.DATABASE_URL) {
   console.error("Set DATABASE_URL to your Neon (or local Postgres) connection string first.");
@@ -23,10 +23,11 @@ let inserted = 0;
 for (const j of jobs) {
   const rows = await sql`
     INSERT INTO jobs (title, company, institution_type, location, work_mode, employment_type, category,
-                      salary_min, salary_max, summary, apply_url, source_name, source_url, expires_at)
+                      salary_min, salary_max, summary, apply_url, source_name, source_url, expires_at, entry_level)
     VALUES (${j.title}, ${j.company}, ${j.institution_type}, ${j.location}, ${j.work_mode},
             ${j.employment_type || "full-time"}, ${j.category}, ${j.salary_min}, ${j.salary_max}, ${j.summary},
-            ${j.source_url}, ${j.source_name}, ${j.source_url}, now() + interval '30 days')
+            ${j.source_url}, ${j.source_name}, ${j.source_url}, now() + interval '30 days',
+            ${isEntryLevel(j.title, j.employment_type)})
     ON CONFLICT (source_url) DO NOTHING
     RETURNING id`;
   inserted += rows.length;

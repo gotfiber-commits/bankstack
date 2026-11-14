@@ -28,11 +28,11 @@ export default async (req) => {
   const [row] = await sql`
     INSERT INTO jobs (employer_id, title, company, institution_type, location, work_mode, employment_type,
                       category, salary_min, salary_max, summary, description, apply_url, core_systems, licenses,
-                      institution_id, is_featured, status)
+                      institution_id, is_featured, status, entry_level)
     VALUES (${employer.id}, ${job.title}, ${employer.company}, ${employer.institution_type}, ${job.location},
             ${job.work_mode}, ${job.employment_type}, ${job.category}, ${job.salary_min}, ${job.salary_max},
             ${job.summary}, ${job.description}, ${job.apply_url}, ${job.core_systems}, ${job.licenses},
-            ${instId}, true, 'pending')
+            ${instId}, true, 'pending', ${job.entry_level})
     RETURNING id`;
 
   try {

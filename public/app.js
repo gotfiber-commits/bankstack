@@ -51,7 +51,12 @@
   };
   const STAGES = { new: "New", reviewing: "Reviewing", interview: "Interview", offer: "Offer", hired: "Hired", rejected: "Not a fit" };
 
-  const state = { jobs: [], demo: false, filters: { q: "", category: "", institution_type: "", work_mode: "", core_system: "", license: "" }, appFilter: "" };
+  const state = { jobs: [], demo: false, filters: { q: "", category: "", institution_type: "", work_mode: "", core_system: "", license: "", level: "" }, appFilter: "" };
+  const blankFilters = (extra = {}) => ({ q: "", category: "", institution_type: "", work_mode: "", core_system: "", license: "", level: "", ...extra });
+  // Early careers. "entry" = roles for new graduates (not internships); "internship" = internships.
+  const LEVELS = { entry: "Entry level · new grads", internship: "Internships" };
+  const isInternship = (j) => j.employment_type === "internship";
+  const isEntry = (j) => !!j.entry_level && !isInternship(j);
   const view = document.getElementById("view");
 
   // ---------- helpers ----------
@@ -139,8 +144,12 @@
     } catch {
       const res = await fetch("seed-jobs.json");
       const seed = await res.json();
+      // The preview tags early-career roles by title, the same rule the server uses for sourced listings.
+      const yes = /(\bintern(ship)?s?\b|trainee|apprentice|entry[- ]level|new grad|graduate|junior|\bjr\b|rotational|teller|universal banker|member service|customer service|personal banker|deposit servicer|loan servicing|hire ahead|staff accountant|\bassociate\b|\b(analyst|specialist|representative|banker|clerk|processor|technician) i\b)/i;
+      const no = /(senior|\bsr\b|lead|manager|director|vice president|\bvp\b|\bavp\b|head of|principal|chief|controller|officer|\bii\b|\biii\b)/i;
       state.jobs = seed.map((j, i) => ({ ...j, id: i + 1, apply_url: j.source_url, direct: false,
-        core_systems: j.core_systems || [], licenses: j.licenses || [] }));
+        core_systems: j.core_systems || [], licenses: j.licenses || [],
+        entry_level: j.employment_type === "internship" || (yes.test(j.title) && !no.test(j.title)) }));
       state.demo = true;
     }
     document.getElementById("demo-banner").hidden = !state.demo;
@@ -158,6 +167,7 @@
       (!f.work_mode || j.work_mode === f.work_mode) &&
       (!f.core_system || (j.core_systems || []).includes(f.core_system)) &&
       (!f.license || (j.licenses || []).includes(f.license)) &&
+      (!f.level || (f.level === "internship" ? isInternship(j) : isEntry(j))) &&
       (!q || [j.title, j.company, j.location, j.summary].join(" ").toLowerCase().includes(q)));
   }
 
@@ -206,6 +216,7 @@
         <span class="job-meta">${esc(j.company)} · ${esc(j.location)}</span>
         <span class="tags">
           ${j.direct ? '<span class="tag direct">Direct</span>' : ""}
+          ${isInternship(j) ? '<span class="tag early">Internship</span>' : isEntry(j) ? '<span class="tag early">Entry level</span>' : ""}
           <span class="tag">${esc(CATEGORIES[j.category] || j.category)}</span>
           <span class="tag">${esc(MODES[j.work_mode] || j.work_mode)}</span>
           <span class="tag">${esc(INST[j.institution_type] || j.institution_type)}</span>
@@ -232,8 +243,10 @@
       </div>
       <div class="row-2">
         <div class="field"><label for="${prefix}-cat">Department</label><select id="${prefix}-cat" name="category">${options(CATEGORIES, j.category)}</select></div>
-        <div class="field"><label for="${prefix}-emp">Employment</label><select id="${prefix}-emp" name="employment_type">${options(EMPLOYMENT, j.employment_type)}</select></div>
+        <div class="field"><label for="${prefix}-emp">Employment</label><select id="${prefix}-emp" name="employment_type" data-entry-box="${prefix}-entry">${options(EMPLOYMENT, j.employment_type)}</select></div>
       </div>
+      <label class="check-line" for="${prefix}-entry"><input type="checkbox" id="${prefix}-entry" name="entry_level"${j.entry_level || j.employment_type === "internship" ? " checked" : ""}>
+        <span><b>Good for new college graduates</b> — entry level, no prior banking experience needed. Listed under <i>New grads</i>${""} on the home page; internships are listed under <i>Internships</i> automatically.</span></label>
       <div class="row-2">
         <div class="field"><label for="${prefix}-min">Salary from (USD/yr)</label><input id="${prefix}-min" name="salary_min" inputmode="numeric" placeholder="95,000" value="${esc(j.salary_min ?? "")}"></div>
         <div class="field"><label for="${prefix}-max">Salary to (USD/yr)</label><input id="${prefix}-max" name="salary_max" inputmode="numeric" placeholder="125,000" value="${esc(j.salary_max ?? "")}"></div>
@@ -380,6 +393,8 @@
         </div>
       </section>
 
+      ${earlyCareers(jobs)}
+
       <section class="figures">
         <div class="wrap figures-grid">
           <div><strong>${jobs.length}</strong><span>open banking jobs</span></div>
@@ -459,12 +474,74 @@
       </section>`;
 
     view.querySelectorAll(".spec").forEach((b) => b.addEventListener("click", () => {
-      state.filters = { q: "", category: b.dataset.cat, institution_type: "", work_mode: "" };
+      state.filters = blankFilters({ category: b.dataset.cat });
       location.hash = "jobs";
     }));
+    bindEarlyCareers(view);
     bindAlerts();
     requestAnimationFrame(() => drawGuilloche(document.getElementById("guilloche"), { x: 0.86, scale: 0.7, max: 300, alpha: 0.11 }));
   }
+
+  // ---------- early careers: new grads and internships ----------
+  // Two banners under the home hero: a search for entry-level roles, and one for internships with
+  // the latest internship postings (employers' own first) and a spot for banks to post theirs.
+  function earlyCareers(jobs) {
+    const entry = jobs.filter(isEntry), interns = jobs.filter(isInternship);
+    const newest = (list) => [...list].sort((a, b) => (b.direct - a.direct) || String(b.posted_at || "").localeCompare(String(a.posted_at || ""))).slice(0, 2);
+    const showcase = newest(interns), gradPicks = newest(entry);
+    const mini = (list, cls) => list.length ? `<ul class="intern-ads ${cls}">${list.map((j) => `<li><a href="${jobHref(j.id)}">
+              <span class="ia-title">${esc(j.title)}</span><span class="ia-meta">${esc(j.company)} · ${esc(j.location)}</span>
+              ${j.direct ? '<span class="tag direct">Direct</span>' : salary(j) ? `<span class="ia-pay">${esc(salary(j))}</span>` : ""}</a></li>`).join("")}</ul>` : "";
+    return `
+      <section class="early" aria-label="Early careers">
+        <div class="wrap early-grid">
+          <article class="early-card">
+            <p class="eyebrow">New college graduates</p>
+            <h2>Start your banking career.</h2>
+            <p>${entry.length ? `<b>${entry.length}</b> entry-level ${entry.length === 1 ? "role" : "roles"}` : "Entry-level roles"} at banks and credit unions: universal bankers, member service, operations, accounting and analyst positions that don't need years of experience.</p>
+            ${mini(gradPicks, "grads")}
+            <form class="early-search" data-early="new-grads" role="search">
+              <input class="search" type="search" name="q" placeholder="Title, bank or city" aria-label="Search entry-level jobs">
+              <button class="btn" type="submit">Search entry-level jobs</button>
+            </form>
+          </article>
+          <article class="early-card interns">
+            <p class="eyebrow">Internships</p>
+            <h2>Banking internships.</h2>
+            <p>${interns.length ? `<b>${interns.length}</b> open ${interns.length === 1 ? "internship" : "internships"}` : "Summer and semester internships"} at banks and credit unions, for students and recent grads.</p>
+            ${mini(showcase, "interns")}
+            <form class="early-search" data-early="internships" role="search">
+              <input class="search" type="search" name="q" placeholder="Title, bank or city" aria-label="Search internships">
+              <button class="btn" type="submit">Find internships</button>
+            </form>
+            <div class="intern-pitch">
+              <p><b>Banks &amp; credit unions:</b> put your internship program in front of students and new grads.</p>
+              <button class="btn secondary" type="button" data-post-internship>Post an internship</button>
+            </div>
+          </article>
+        </div>
+      </section>`;
+  }
+
+  function bindEarlyCareers(root) {
+    root.querySelectorAll("form[data-early]").forEach((form) => form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const route = form.dataset.early;
+      state.filters = blankFilters({ q: form.q.value.trim(), level: route === "internships" ? "internship" : "entry" });
+      state.filters._preset = route;
+      location.hash = route;
+    }));
+    root.querySelectorAll("[data-post-internship]").forEach((b) => b.addEventListener("click", () => {
+      state.postPreset = { employment_type: "internship", entry_level: true };
+      location.hash = "post";
+    }));
+  }
+
+  // When the job type is set to Internship, tick "good for new grads" too (the server does the same).
+  document.addEventListener("change", (e) => {
+    const sel = e.target.closest?.("select[data-entry-box]");
+    if (sel && sel.value === "internship") { const box = document.getElementById(sel.dataset.entryBox); if (box) box.checked = true; }
+  });
 
   // ---------- jobs ----------
   function renderList() {
@@ -478,17 +555,36 @@
       b.setAttribute("aria-pressed", String(b.dataset.cat === state.filters.category)));
   }
 
-  function viewJobs() {
+  // preset: "new-grads" or "internships" opens the board pre-filtered, with its own heading.
+  function viewJobs(preset = null) {
+    let f = state.filters;
+    if (preset) {
+      if (f._preset !== preset) { state.filters = blankFilters({ q: f._preset ? "" : f.q }); }
+      state.filters.level = preset === "internships" ? "internship" : "entry";
+      state.filters._preset = preset;
+    } else if (f._preset) {
+      // Leaving a new-grads or internships page for the full board: drop that page's filter.
+      state.filters = blankFilters();
+    }
+    const fl = (f = state.filters);
+    const pool = fl.level ? state.jobs.filter((j) => (fl.level === "internship" ? isInternship(j) : isEntry(j))) : state.jobs;
     const counts = {};
-    state.jobs.forEach((j) => (counts[j.category] = (counts[j.category] || 0) + 1));
-    const f = state.filters;
+    pool.forEach((j) => (counts[j.category] = (counts[j.category] || 0) + 1));
+    const heads = {
+      "new-grads": ["Entry-level jobs for new graduates", "Roles at banks and credit unions that don't need years of experience: universal bankers, member service, operations, accounting and analyst positions. A great first job in the industry."],
+      internships: ["Banking internships", "Summer and semester internships at banks and credit unions, for students and recent graduates."],
+    };
+    const [h1, lede] = heads[preset] || ["Current positions", "Openings at banks and credit unions. Direct postings come from the employer; the rest are gathered from public job sites and link to the original."];
 
     view.innerHTML = `
       <section class="hero">
         <canvas id="guilloche" aria-hidden="true"></canvas>
         <div class="wrap">
-          <h1>Current positions</h1>
-          <p>Openings at banks and credit unions. Direct postings come from the employer; the rest are gathered from public job sites and link to the original.</p>
+          ${preset ? `<p class="eyebrow">Early careers · <a href="#${preset === "internships" ? "new-grads" : "internships"}">${preset === "internships" ? "New-grad jobs" : "Internships"} →</a></p>` : ""}
+          <h1>${h1}</h1>
+          <p>${lede}</p>
+          ${preset === "internships" ? `<div class="intern-pitch inline"><p><b>Hiring interns?</b> Banks and credit unions can post an internship program here.</p>
+            <button class="btn secondary" type="button" data-post-internship>Post an internship</button></div>` : ""}
           <div class="stat-row" role="group" aria-label="Filter by department">
             ${Object.entries(CATEGORIES).filter(([k]) => counts[k]).map(([k, v]) =>
               `<button class="cat-chip" data-cat="${k}" aria-pressed="false" type="button">${esc(v)} <b>${counts[k]}</b></button>`).join("")}
@@ -502,6 +598,7 @@
           <select id="f-mode" aria-label="Work arrangement"><option value="">Any arrangement</option>${options(MODES, f.work_mode)}</select>
           <select id="f-core" aria-label="Core system"><option value="">Any core system</option>${options(CORE_SYSTEMS, f.core_system)}</select>
           <select id="f-lic" aria-label="License"><option value="">Any license</option>${options(LICENSES, f.license)}</select>
+          <select id="f-level" aria-label="Experience level"><option value="">Any experience level</option>${options(LEVELS, f.level)}</select>
         </div>
         <div class="result-count" id="result-count"></div>
         <ul class="ledger" id="ledger"></ul>
@@ -517,6 +614,8 @@
     document.getElementById("f-mode").addEventListener("change", (e) => { state.filters.work_mode = e.target.value; renderList(); });
     document.getElementById("f-core").addEventListener("change", (e) => { state.filters.core_system = e.target.value; renderList(); });
     document.getElementById("f-lic").addEventListener("change", (e) => { state.filters.license = e.target.value; renderList(); });
+    document.getElementById("f-level").addEventListener("change", (e) => { state.filters.level = e.target.value; renderList(); });
+    bindEarlyCareers(view);
     renderList();
     bindAlerts();
     requestAnimationFrame(() => drawGuilloche(document.getElementById("guilloche")));
@@ -879,11 +978,14 @@
         state.duplicateFrom = null;
       }
     }
+    if (state.postPreset && !prefill.title) prefill = state.postPreset; // "Post an internship"
+    state.postPreset = null;
     view.innerHTML = `
       <div class="wrap post">
         ${postIntro(acct ? `<p class="source-note">Posting as <b>${esc(acct.company)}</b>${acct.contact_name ? ` · ${esc(acct.contact_name)}` : ""}. Billed to your account. <a href="#dashboard">Back to dashboard</a></p>` : "")}
         <form class="panel form" id="post-form" novalidate>
-          <h2>${prefill.title ? "The role (copied from an earlier posting)" : "The role"}</h2>
+          <h2>${prefill.title ? "The role (copied from an earlier posting)" : prefill.employment_type === "internship" ? "The internship" : "The role"}</h2>
+          ${!prefill.title && prefill.employment_type === "internship" ? `<p class="source-note">Set up as an internship: it's listed under <i>Internships</i> for students and new grads. Describe the program — length, team, schedule and pay.</p>` : ""}
           ${roleFields(prefill, "p", aiDraftBox())}
           ${honeypot}
           ${checkoutLine(plan)}
@@ -2281,7 +2383,7 @@
     if (pathJob && h) history.replaceState(null, "", "/#" + h);
     if (!h) h = pathJob ? `job-${pathJob[1]}` : "home";
     if (h === "employers") h = "post";
-    const section = h.startsWith("job-") ? "jobs" : h.startsWith("edit-") ? "dashboard"
+    const section = h.startsWith("job-") || h === "new-grads" || h === "internships" ? "jobs" : h.startsWith("edit-") ? "dashboard"
       : ["matches", "saved", "applications"].includes(h) ? "profile" : h;
     document.querySelectorAll("[data-nav]").forEach((a) => {
       if (a.dataset.nav === section) a.setAttribute("aria-current", "page");
@@ -2291,6 +2393,7 @@
     if (h.startsWith("job-")) viewJob(h.slice(4));
     else if (h.startsWith("edit-")) viewEdit(h.slice(5));
     else if (h === "jobs") viewJobs();
+    else if (h === "new-grads" || h === "internships") viewJobs(h);
     else if (h === "post") viewPost();
     else if (h === "welcome") viewWelcome();
     else if (h === "email-link") viewEmailLink();

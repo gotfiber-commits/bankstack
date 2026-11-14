@@ -96,7 +96,7 @@ h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 
 
 /* Filters */
 .filters { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 0.5rem; padding-block: 1.25rem 0.75rem; }
-.filters input, .filters select, .field input, .field select, .field textarea {
+.filters input, .filters select, .field input, .field select, .field textarea, .early-search input {
   width: 100%; font: inherit; color: var(--fg); background: var(--surface);
   border: 1px solid var(--line); border-radius: var(--radius); padding: 0.55rem 0.7rem;
 }
@@ -563,4 +563,44 @@ tr.is-new td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .billing-setup .inline-form .field { flex: 1 1 18rem; margin: 0; }
 @media (max-width: 720px) {
   .plan-panel { grid-template-columns: 1fr; }
+}
+
+/* ---------- early careers: new grads + internships ---------- */
+.early { border-bottom: 1px solid var(--line); background: var(--surface); }
+.early-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; padding-block: 1.75rem; }
+.early-card {
+  border: 1px solid var(--line); border-top: 4px solid var(--accent); border-radius: var(--radius);
+  background: var(--bg); padding: 1.35rem 1.4rem; display: flex; flex-direction: column; gap: 0.75rem;
+}
+.early-card.interns { border-top-color: var(--brass); }
+.early-card .eyebrow { margin: 0; }
+.early-card h2 { margin: 0; font-size: clamp(1.3rem, 2.4vw, 1.6rem); font-weight: 800; letter-spacing: -0.02em; }
+.early-card > p { margin: 0; color: var(--muted); }
+.early-card > p b { color: var(--fg); font-family: var(--font-mono); }
+.early-search { display: flex; gap: 0.5rem; margin-top: auto; }
+.early-search input { flex: 1 1 auto; min-width: 0; }
+.early-search .btn { white-space: nowrap; }
+.intern-ads { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+.intern-ads a {
+  display: grid; grid-template-columns: 1fr auto; gap: 0.1rem 0.75rem; align-items: center; text-decoration: none; color: var(--fg);
+  border: 1px solid var(--line); border-left: 3px solid var(--brass); border-radius: var(--radius); background: var(--surface); padding: 0.55rem 0.75rem;
+}
+.intern-ads a:hover .ia-title { color: var(--accent); }
+.intern-ads .ia-title { font-weight: 700; }
+.intern-ads .ia-meta { grid-column: 1; font-size: 0.85rem; color: var(--muted); }
+.intern-ads .tag, .intern-ads .ia-pay { grid-column: 2; grid-row: 1 / span 2; }
+.intern-ads .ia-pay { font-family: var(--font-mono); font-size: 0.85rem; white-space: nowrap; }
+.intern-ads.grads a { border-left-color: var(--accent); }
+.intern-pitch {
+  display: flex; gap: 0.75rem; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  border-top: 1px dashed var(--line); padding-top: 0.75rem; font-size: 0.92rem;
+}
+.intern-pitch p { margin: 0; flex: 1 1 16rem; }
+.intern-pitch.inline { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 0.75rem 1rem; margin-top: 1rem; max-width: 46rem; }
+.tag.early { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+label.check-line[for$="-entry"] { align-items: flex-start; margin: 0.25rem 0 0.75rem; }
+label.check-line[for$="-entry"] input { margin-top: 0.2rem; }
+@media (max-width: 760px) {
+  .early-grid { grid-template-columns: 1fr; padding-block: 1.25rem; }
+  .early-search { flex-direction: column; }
 }
