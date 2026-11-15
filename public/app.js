@@ -1366,6 +1366,7 @@
           <h1>Contact us</h1>
           <p class="lede">Questions about posting jobs, your plan, a listing or your job search? Send us a message and we'll reply by email.</p>
           <a class="btn secondary" id="contact-mailto" href="${mailto}">Email ${CONTACT_TO}</a>
+          <p class="vet-note"><b>Veteran-owned small business.</b> A percentage of every sale goes to help veterans in need.</p>
         </header>
 
         <div class="contact-cards">

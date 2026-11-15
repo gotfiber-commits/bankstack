@@ -683,3 +683,7 @@ label.check-line[for$="-entry"] input { margin-top: 0.2rem; }
 .inbox li:first-child { border-top: 0; padding-top: 0; }
 .inbox-head { display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem; align-items: baseline; }
 .inbox-body { margin: 0.2rem 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow: auto; }
+
+/* Veteran-owned note */
+.site-foot .vet-line { color: var(--fg); font-weight: 600; }
+.vet-note { margin: 0.25rem 0 0; padding: 0.6rem 0.85rem; border-left: 3px solid var(--accent); background: var(--accent-soft); border-radius: 4px; font-size: 0.92rem; }

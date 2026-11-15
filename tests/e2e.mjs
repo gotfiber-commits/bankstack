@@ -1518,6 +1518,7 @@ try {
   check("an institution's open listings appear on its page",
     r.status === 200 && String(r.data).includes("Consumer Loan Officer"));
   r = await call("GET", "/banks/tennessee-valley-credit-union-muscle-shoals-al");
+  check("directory pages carry the veteran-owned footer line", String(r.data).includes("A veteran-owned small business. A percentage of every sale goes to help veterans in need."));
   check("credit union page renders cleanly without optional figures",
     r.status === 200 && String(r.data).includes("NCUA charter 60001") && !String(r.data).includes("total assets"));
   r = await call("GET", "/banks/not-a-real-bank");

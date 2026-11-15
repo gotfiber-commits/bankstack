@@ -643,6 +643,16 @@ try {
   const phoneHead = await phoneContact.evaluate(() => { const h = document.querySelector(".site-head"); return h.getBoundingClientRect().height; });
   check("header nav with Contact still fits on a phone", phoneHead < 200, phoneHead);
 
+  check("contact page says BankJobz is veteran-owned", (await visitor.textContent(".vet-note")).includes("Veteran-owned small business"));
+  check("footer says veteran-owned and that a percentage of sales helps veterans",
+    (await visitor.textContent(".site-foot .vet-line")) === "A veteran-owned small business. A percentage of every sale goes to help veterans in need.");
+  await visitor.goto(BASE + "/privacy.html");
+  const privacyText = await visitor.textContent("main.legal");
+  check("privacy policy has a Who we are section on the veteran-owned business",
+    privacyText.includes("Who we are") && privacyText.includes("veteran-owned small business") && privacyText.includes("don't share your information with any veterans' organization"));
+  await visitor.goto(BASE + "/terms.html");
+  check("terms page footer carries the veteran-owned line", (await visitor.locator(".site-foot .vet-line").count()) === 1);
+
   check("no JavaScript errors on any page", pageErrors.length === 0, pageErrors.join(" | "));
 } catch (err) {
   failed++;

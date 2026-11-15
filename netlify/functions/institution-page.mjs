@@ -74,7 +74,8 @@ ${noindex ? `<meta name="robots" content="noindex, follow">` : ""}
 ${body}
 </main>
 <footer class="site-foot"><div class="wrap">
-<span>${BRAND}. Jobs at banks and credit unions. <a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a> · <a href="/banks">Directory</a> · <a href="/#contact">Contact us</a></span>
+<span>${BRAND}. Jobs at banks and credit unions. <b class="vet-line">A veteran-owned small business. A percentage of every sale goes to help veterans in need.</b></span>
+<span><a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a> · <a href="/banks">Directory</a> · <a href="/#contact">Contact us</a></span>
 <span>Directory figures come from public FDIC and NCUA data and may lag the institution's own reporting. ${BRAND} is not affiliated with or endorsed by the institutions shown.</span>
 </div></footer>
 </body>
