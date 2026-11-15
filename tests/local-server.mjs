@@ -39,7 +39,9 @@ export async function startLocalServer(port = 8899) {
         const params = Object.fromEntries(r.names.map((n, i) => [n, decodeURIComponent(m[i + 1])]));
         const response = await r.handler(request, { params });
         res.writeHead(response.status, Object.fromEntries(response.headers));
-        res.end(Buffer.from(await response.arrayBuffer()));
+        // Pass a streamed body through chunk by chunk, as Netlify does.
+        if (response.body) { for await (const chunk of response.body) res.write(chunk); }
+        res.end();
         return;
       }
       // Test fixture: a page that loads fine but says the job is gone (how aggregators and ATSes behave).

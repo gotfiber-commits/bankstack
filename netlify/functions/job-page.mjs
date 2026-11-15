@@ -2,7 +2,7 @@
 // Serves the app's index.html with the job's title, description, social-preview tags and canonical link
 // filled in server-side. Employer-posted jobs also get schema.org JobPosting data so they can appear in
 // Google's job search. Sourced listings don't, because they duplicate someone else's posting.
-import { db, siteUrl, BRAND } from "../lib/shared.mjs";
+import { db, siteUrl, BRAND, descriptionHtml } from "../lib/shared.mjs";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -17,7 +17,7 @@ function jobPostingLd(job, base) {
     "@context": "https://schema.org/",
     "@type": "JobPosting",
     title: job.title,
-    description: `<p>${esc(job.summary)}</p>${job.description ? esc(job.description).replace(/\n/g, "<br>") : ""}`,
+    description: `<p>${esc(job.summary)}</p>${job.description ? descriptionHtml(job.description) : ""}`,
     identifier: { "@type": "PropertyValue", name: BRAND, value: `BSK-${String(job.id).padStart(4, "0")}` },
     datePosted: new Date(job.posted_at).toISOString(),
     validThrough: new Date(job.expires_at).toISOString(),

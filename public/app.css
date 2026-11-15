@@ -604,3 +604,64 @@ label.check-line[for$="-entry"] input { margin-top: 0.2rem; }
   .early-grid { grid-template-columns: 1fr; padding-block: 1.25rem; }
   .early-search { flex-direction: column; }
 }
+
+/* Job descriptions: headings and lists from the posting's plain text */
+.detail .prose.rich { white-space: normal; }
+.prose.rich h3 { font-size: 1.05rem; margin: 1.4rem 0 0.4rem; }
+.prose.rich h3:first-child { margin-top: 0; }
+.prose.rich p { margin: 0 0 0.8rem; }
+.prose.rich ul { margin: 0 0 0.8rem; padding-left: 1.2rem; display: grid; gap: 0.3rem; }
+
+/* AI draft preview, right under the Draft it button */
+.ai-preview { margin-top: 0.9rem; border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius); background: var(--surface); padding: 0.9rem 1rem; }
+.ai-preview-head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; font-size: 0.9rem; }
+.ai-preview-head span { color: var(--muted); font-family: var(--font-mono); font-size: 0.75rem; }
+.ai-preview.writing .ai-preview-head span::after { content: " ▍"; animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .ai-preview.writing .ai-preview-head span::after { animation: none; } }
+.ai-preview-summary { margin: 0.6rem 0; font-weight: 600; }
+.ai-preview-summary:empty { display: none; }
+.ai-preview-body { max-height: 420px; overflow-y: auto; font-size: 0.93rem; padding-right: 0.25rem; }
+.ai-preview-body h3:first-child { margin-top: 0.2rem; }
+.ai-preview .cta-row { margin-top: 0.8rem; flex-wrap: wrap; }
+
+/* Benefits checklist */
+.field.benefits { border: 0; padding: 0; margin: 0 0 1rem; min-width: 0; }
+.field.benefits legend { font-weight: 600; font-size: 0.9rem; padding: 0; margin-bottom: 0.4rem; }
+.field.benefits .hint-inline { font-weight: 400; color: var(--muted); font-size: 0.82rem; }
+.benefit-quick { margin-top: 0.4rem; gap: 1rem; }
+
+/* ---------- Post a job: one column, price on top, the form in numbered steps ---------- */
+.post-page { padding-block: 2rem 3rem; display: grid; gap: 1.5rem; }
+.post-head { display: grid; gap: 0.5rem; max-width: 52rem; position: static; }
+.post-head h1 { font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 800; letter-spacing: -0.02em; margin: 0; }
+.post-head .lede { margin: 0; color: var(--muted); font-size: 1.05rem; }
+.post-head .post-as { margin: 0.25rem 0 0; font-size: 0.9rem; color: var(--muted); }
+.post-head .ticks { margin: 0.5rem 0 0; }
+.post-page > .auth-card { max-width: 34rem; }
+.post-form { padding: 0; display: block; }
+.post-form > .source-note { margin: 0; padding: 1.25rem 1.75rem 0; }
+.step { padding: 1.5rem 1.75rem; border-top: 1px solid var(--line); display: grid; gap: 0.85rem; }
+.post-form > .step:first-of-type, .post-form > .source-note + .step { border-top: 0; }
+.step-title { display: flex; align-items: center; gap: 0.6rem; font-size: 1.05rem; margin: 0; }
+.step-n {
+  display: inline-grid; place-items: center; width: 1.6rem; height: 1.6rem; border-radius: 50%;
+  background: var(--accent); color: var(--accent-ink); font-family: var(--font-mono); font-size: 0.8rem; font-weight: 600;
+}
+.row-4 { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0.75rem 1rem; align-items: start; }
+.row-4 + .row-4 { margin-top: 0.25rem; }
+.row-4 .check-line { align-self: center; margin: 0; }
+.row-4 .span-2 { grid-column: span 2; }
+.step .field.benefits { margin: 0; }
+.step-publish .checkout-line { border-top: 0; padding-top: 0; margin-bottom: 0.75rem; }
+.step-publish .btn-lg { width: auto; min-width: 16rem; }
+.step-publish .msg { margin-top: 0.75rem; }
+#edit-form .cta-row, #edit-form > .msg { margin: 0 1.75rem 1.5rem; }
+#edit-form > h1, #edit-form > .source-note { padding-inline: 1.75rem; }
+#edit-form > h1 { padding-top: 1.5rem; }
+@media (max-width: 640px) {
+  .step { padding: 1.25rem 1rem; }
+  .post-form > .source-note, #edit-form > h1, #edit-form > .source-note, #edit-form .cta-row { padding-inline: 1rem; }
+  .row-4 .span-2 { grid-column: auto; }
+  .step-publish .btn-lg { width: 100%; }
+}

@@ -221,3 +221,25 @@ export async function candidateFromRequest(req) {
   const rows = await db()`SELECT * FROM candidates WHERE api_token = ${token} LIMIT 1`;
   return rows[0] || null;
 }
+
+// A posting's description as simple HTML (headings, lists, paragraphs), the same rules as the
+// page uses: short lines followed by bullets are headings, "- " lines are list items.
+export function descriptionHtml(text) {
+  const e = (v) => String(v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  const lines = String(text || "").replace(/\r/g, "").split("\n");
+  const isBullet = (l) => /^\s*[-•*]\s+/.test(l);
+  const nextFilled = (i) => { for (let k = i + 1; k < lines.length; k++) if (lines[k].trim()) return lines[k]; return ""; };
+  let html = "", list = [], para = [];
+  const endList = () => { if (list.length) { html += `<ul>${list.map((x) => `<li>${e(x)}</li>`).join("")}</ul>`; list = []; } };
+  const endPara = () => { if (para.length) { html += `<p>${para.map(e).join("<br>")}</p>`; para = []; } };
+  lines.forEach((raw, i) => {
+    const line = raw.trim();
+    if (!line) { endList(); endPara(); return; }
+    if (isBullet(line)) { endPara(); list.push(line.replace(/^[-•*]\s+/, "")); return; }
+    endList();
+    const heading = line.length <= 60 && !/[.!?,;]$/.test(line) && (isBullet(nextFilled(i)) || /^(About the role|What you'll do|What you'll bring|Nice to have|Working conditions|Responsibilities|Qualifications|Requirements|Benefits)\b/i.test(line));
+    if (heading) { endPara(); html += `<h3>${e(line.replace(/:$/, ""))}</h3>`; } else para.push(line);
+  });
+  endList(); endPara();
+  return html;
+}

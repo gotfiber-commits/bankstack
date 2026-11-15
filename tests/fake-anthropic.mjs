@@ -3,6 +3,30 @@
 // or network. Records every request for assertions.
 import http from "node:http";
 
+// A full posting in the shape the prompt asks for (summary kept stable for older checks).
+const POSTING = `SUMMARY:
+Run daily deposit operations for a growing community bank, owning wires, ACH and exceptions.
+DESCRIPTION:
+About the role
+Our operations team keeps every payment moving. You'll run the daily wire and ACH cycle and report to the Operations Manager.
+
+What you'll do
+- Process incoming and outgoing wires, verifying callbacks and OFAC results
+- Balance the daily ACH files and resolve returns and NOCs
+- Work the daily exception and overdraft reports
+- Support branch staff with deposit questions
+
+What you'll bring
+- 2+ years in bank operations or as a teller
+- Working knowledge of Reg E, Reg CC and BSA/AML
+- Accuracy under deadlines
+
+Nice to have
+- Experience with Fedwire
+
+Ready? Apply with your résumé.
+Shoals Community Bank is an equal opportunity employer.`;
+
 export function startFakeAnthropic(port = 8978) {
   const requests = [];
   const server = http.createServer((req, res) => {
@@ -33,7 +57,31 @@ export function startFakeAnthropic(port = 8978) {
       }
       const text = sys.includes("COVER NOTE")
         ? "COVER NOTE:\nI've spent ten years in consumer lending at a community bank, working underwriting end to end, and this role matches that experience closely. I'd welcome the chance to bring it to your team.\nTIPS:\n- Lead with your underwriting experience\n- Mention your NMLS registration early\n- Mirror the posting's wording on loan servicing"
-        : "SUMMARY:\nRun daily deposit operations for a growing community bank, owning wires, ACH and exceptions.\nDESCRIPTION:\nOur operations team keeps every payment moving.\nWhat you'll do\n- Process wires and ACH files\n- Work daily exceptions\n- Support branch staff\nWhat you'll bring\n- 2+ years in bank operations\n- Accuracy under deadlines\nReady? Apply with your résumé.";
+        : POSTING;
+      if (body.stream) {
+        // Server-sent events, as the real API streams them, a few characters at a time.
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+        send("message_start", { message: { id: "msg_test", model: body.model } });
+        send("content_block_start", { index: 0, content_block: { type: "text", text: "" } });
+        const pieces = text.match(/[\s\S]{1,37}/g);
+        let i = 0;
+        const tick = () => {
+          if (userText.includes("MIDSTREAM_ERR_TEST") && i === 4) {
+            send("error", { error: { type: "overloaded_error", message: "Overloaded" } });
+            return res.end();
+          }
+          if (i < pieces.length) {
+            send("content_block_delta", { index: 0, delta: { type: "text_delta", text: pieces[i++] } });
+            return setTimeout(tick, 3);
+          }
+          send("content_block_stop", { index: 0 });
+          send("message_delta", { delta: { stop_reason: "end_turn" }, usage: { output_tokens: 900 } });
+          send("message_stop", {});
+          res.end();
+        };
+        return tick();
+      }
       res.writeHead(200, { "content-type": "application/json" });
       res.end(JSON.stringify({
         id: "msg_test", type: "message", role: "assistant", model: body.model,

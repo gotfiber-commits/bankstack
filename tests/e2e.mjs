@@ -1278,6 +1278,41 @@ try {
     && aiReq.body.system.includes("equal-opportunity") && aiReq.body.messages[0].content.includes("Deposit Operations Specialist")
     && aiReq.body.messages[0].content.includes("wires and ACH") && aiReq.body.messages[0].content.includes("$48,000"));
 
+  check("the posting writer has room for a full posting and is allowed to use what the role normally involves",
+    aiReq.body.max_tokens >= 2000 && aiReq.body.stream === true
+    && aiReq.body.system.includes("Build a full posting from your knowledge of how that role works")
+    && aiReq.body.system.includes("Never invent facts only the employer can know")
+    && aiReq.body.system.includes("8 to 12 bullets"));
+
+  // Streamed drafts: the page fills in as the text arrives.
+  const streamDraft = async (body) => {
+    const res = await fetch(`${BASE}/api/ai/posting`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ stream: true, ...body }) });
+    return { status: res.status, type: res.headers.get("content-type") || "", text: await res.text() };
+  };
+  let sd = await streamDraft({ title: "Head Teller" });
+  check("a title alone streams back a full posting", sd.status === 200 && sd.type.startsWith("text/plain")
+    && /SUMMARY:/.test(sd.text) && /DESCRIPTION:/.test(sd.text) && sd.text.includes("What you'll do") && sd.text.includes("Nice to have"), sd);
+  aiReq = fakeAi.requests.at(-1);
+  check("…the request carries just the title, and asks for the stream", aiReq.body.stream === true && aiReq.body.messages[0].content.trim() === "Job title: Head Teller");
+  sd = await streamDraft({ title: "Member Service Representative", institution_type: "credit-union", company: "TVA Community Credit Union" });
+  aiReq = fakeAi.requests.at(-1);
+  check("credit unions get member wording", aiReq.body.messages[0].content.includes("Institution type: credit-union")
+    && aiReq.body.system.includes('Use "customers" for a bank and "members" for a credit union'));
+  sd = await streamDraft({ title: "Teller", notes: "MIDSTREAM_ERR_TEST" });
+  check("an error partway through arrives as a marked line the page shows", sd.status === 200
+    && sd.text.includes("[[BANKJOBZ_ERROR]] The writing assistant is busy right now"), sd.text.slice(-120));
+  process.env.ANTHROPIC_TIMEOUT_MS = "500";
+  sd = await streamDraft({ title: "Teller", notes: "SLOW_TEST" });
+  check("a slow first byte is still a clear JSON error with the right status", sd.status === 504 && sd.type.includes("application/json") && /took too long/.test(sd.text), sd);
+  delete process.env.ANTHROPIC_TIMEOUT_MS;
+  sd = await streamDraft({});
+  check("a streamed draft still needs a title", sd.status === 400 && sd.type.includes("application/json"));
+
+  const { descriptionHtml } = await import("../netlify/lib/shared.mjs");
+  const dh = descriptionHtml("About the role\nYou lead the teller line.\n\nWhat you'll do\n- Audit the vault\n- Approve <overrides>\nApply today.");
+  check("descriptions become headings, lists and paragraphs, with everything escaped",
+    dh === "<h3>About the role</h3><p>You lead the teller line.</p><h3>What you&#39;ll do</h3><ul><li>Audit the vault</li><li>Approve &lt;overrides&gt;</li></ul><p>Apply today.</p>", dh);
+
   r = await call("POST", "/api/ai/apply-assist", { body: { job_id: nmlsJobId } });
   check("apply assist needs a signed-in candidate", r.status === 401);
   r = await call("POST", "/api/ai/apply-assist", { token: ck, body: { job_id: 999999 } });

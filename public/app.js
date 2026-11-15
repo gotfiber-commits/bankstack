@@ -232,27 +232,124 @@
   const options = (map, sel) => Object.entries(map).map(([k, v]) =>
     `<option value="${k}"${k === sel ? " selected" : ""}>${esc(v)}</option>`).join("");
 
+  // ---------- benefits: tick a box, a standard line goes into the description ----------
+  // [id, chip label, the line added under "Benefits"]. The description is the only place they're
+  // stored, so a box is ticked exactly when its line is in the description.
+  const BENEFITS = [
+    ["medical", "Medical", "Medical insurance"],
+    ["dental", "Dental", "Dental insurance"],
+    ["vision", "Vision", "Vision insurance"],
+    ["life", "Life insurance", "Life insurance"],
+    ["disability", "Disability", "Short- and long-term disability insurance"],
+    ["401k", "401(k)", "401(k) retirement plan"],
+    ["401k-match", "401(k) match", "Employer match on 401(k) contributions"],
+    ["esop", "ESOP", "Employee stock ownership plan (ESOP)"],
+    ["pension", "Pension", "Pension plan"],
+    ["pto", "Paid time off", "Paid time off"],
+    ["holidays", "Paid holidays", "Paid holidays"],
+    ["sick", "Sick leave", "Paid sick leave"],
+    ["parental", "Parental leave", "Paid parental leave for mothers and fathers"],
+    ["hsa", "HSA", "Health savings account (HSA)"],
+    ["fsa", "FSA", "Flexible spending account (FSA)"],
+    ["eap", "Employee assistance", "Employee assistance program (EAP)"],
+    ["tuition", "Tuition reimbursement", "Tuition reimbursement"],
+    ["training", "Training & banking school", "Paid training and professional development, including banking school"],
+    ["wellness", "Wellness program", "Wellness program"],
+    ["perks", "Employee banking perks", "Employee banking perks, such as free checking and loan discounts"],
+    ["bonus", "Incentive / bonus", "Incentive or bonus program"],
+    ["flex", "Flexible scheduling", "Flexible scheduling"],
+  ];
+  const COMMON_BENEFITS = ["medical", "dental", "vision", "life", "401k", "401k-match", "pto", "holidays", "sick"];
+  const bulletText = (l) => l.replace(/^\s*[-•*]\s+/, "").trim().toLowerCase();
+  const isBulletLine = (l) => /^\s*[-•*]\s+/.test(l);
+  const hasBenefitLine = (desc, line) => String(desc || "").split("\n").some((l) => isBulletLine(l) && bulletText(l) === line.toLowerCase());
+
+  // Rewrites the description's "Benefits" section to hold exactly these standard lines (plus any
+  // lines the employer typed there themselves). Adds the section after the last list if it's
+  // missing, and removes it when nothing is left in it.
+  function withBenefits(desc, lines) {
+    const rows = String(desc || "").replace(/\r/g, "").split("\n");
+    const standard = new Set(BENEFITS.map((b) => b[2].toLowerCase()));
+    const h = rows.findIndex((l) => /^\s*benefits\s*:?\s*$/i.test(l));
+    const bullets = lines.map((l) => "- " + l);
+    if (h >= 0) {
+      let end = h + 1;
+      while (end < rows.length && (isBulletLine(rows[end]) || (!rows[end].trim() && end + 1 < rows.length && isBulletLine(rows[end + 1]) && end === h + 1))) end++;
+      const own = rows.slice(h + 1, end).filter((l) => isBulletLine(l) && !standard.has(bulletText(l)));
+      const keep = [...bullets, ...own];
+      if (keep.length) rows.splice(h, end - h, "Benefits", ...keep);
+      else rows.splice(h, end - h);
+    } else if (bullets.length) {
+      let last = -1;
+      rows.forEach((l, i) => { if (isBulletLine(l)) last = i; });
+      if (last < 0) rows.push("", "Benefits", ...bullets);
+      else rows.splice(last + 1, 0, "", "Benefits", ...bullets, ...(rows[last + 1]?.trim() ? [""] : []));
+    }
+    return rows.join("\n").replace(/\n{3,}/g, "\n\n").replace(/^\n+/, "").trimEnd();
+  }
+
+  const benefitBoxes = (prefix) => [...document.querySelectorAll(`input[name="benefit"][data-prefix="${prefix}"]`)];
+  const chosenBenefitLines = (prefix) => benefitBoxes(prefix).filter((b) => b.checked)
+    .map((b) => BENEFITS.find((x) => x[0] === b.value)[2]);
+  function applyBenefits(prefix) {
+    const desc = document.getElementById(`${prefix}-desc`);
+    if (desc) desc.value = withBenefits(desc.value, chosenBenefitLines(prefix));
+  }
+  // One set of listeners for every form that has the benefit boxes.
+  document.addEventListener("change", (e) => {
+    const box = e.target.closest?.('input[name="benefit"]');
+    if (box) applyBenefits(box.dataset.prefix);
+  });
+  document.addEventListener("click", (e) => {
+    const btn = e.target.closest?.("[data-benefit-preset]");
+    if (!btn) return;
+    benefitBoxes(btn.dataset.prefix).forEach((b) => { b.checked = btn.dataset.benefitPreset === "common" ? (b.checked || COMMON_BENEFITS.includes(b.value)) : false; });
+    applyBenefits(btn.dataset.prefix);
+  });
+  // Typing in the description keeps the boxes honest: delete a line and its box unticks.
+  document.addEventListener("input", (e) => {
+    const desc = e.target.closest?.('textarea[name="description"]');
+    if (!desc) return;
+    const prefix = desc.id.replace(/-desc$/, "");
+    benefitBoxes(prefix).forEach((b) => { b.checked = hasBenefitLine(desc.value, BENEFITS.find((x) => x[0] === b.value)[2]); });
+  });
+
   // Role fields shared by "Post a job", "Edit posting" and the admin's "Add a sourced listing".
-  function roleFields(j = {}, prefix = "p", afterTitle = "") {
-    return `
+  // steps: lay the fields out as numbered steps across the page (post and edit forms).
+  function roleFields(j = {}, prefix = "p", afterTitle = "", steps = false) {
+    const step = (n, title, body) => steps
+      ? `<section class="step" aria-labelledby="${prefix}-step-${n}"><h2 class="step-title" id="${prefix}-step-${n}"><span class="step-n">${n}</span>${title}</h2>${body}</section>`
+      : body;
+    const row = steps ? "row-4" : "row-2";
+    return step(1, j.employment_type === "internship" && !j.id ? "The internship" : "The job", `
       <div class="field"><label for="${prefix}-title">Job title</label><input id="${prefix}-title" name="title" required placeholder="Senior Loan Officer" value="${esc(j.title)}"></div>
-      ${afterTitle}
-      <div class="row-2">
+      ${afterTitle}`)
+    + step(2, "Details", `
+      <div class="${row}">
         <div class="field"><label for="${prefix}-location">Location</label><input id="${prefix}-location" name="location" required placeholder="Birmingham, AL" value="${esc(j.location)}"></div>
         <div class="field"><label for="${prefix}-mode">Arrangement</label><select id="${prefix}-mode" name="work_mode">${options(MODES, j.work_mode)}</select></div>
-      </div>
-      <div class="row-2">
+      ${steps ? "" : `</div><div class="row-2">`}
         <div class="field"><label for="${prefix}-cat">Department</label><select id="${prefix}-cat" name="category">${options(CATEGORIES, j.category)}</select></div>
         <div class="field"><label for="${prefix}-emp">Employment</label><select id="${prefix}-emp" name="employment_type" data-entry-box="${prefix}-entry">${options(EMPLOYMENT, j.employment_type)}</select></div>
       </div>
-      <label class="check-line" for="${prefix}-entry"><input type="checkbox" id="${prefix}-entry" name="entry_level"${j.entry_level || j.employment_type === "internship" ? " checked" : ""}>
-        <span><b>Good for new college graduates</b> — entry level, no prior banking experience needed. Listed under <i>New grads</i>${""} on the home page; internships are listed under <i>Internships</i> automatically.</span></label>
-      <div class="row-2">
+      <div class="${row}">
         <div class="field"><label for="${prefix}-min">Salary from (USD/yr)</label><input id="${prefix}-min" name="salary_min" inputmode="numeric" placeholder="95,000" value="${esc(j.salary_min ?? "")}"></div>
         <div class="field"><label for="${prefix}-max">Salary to (USD/yr)</label><input id="${prefix}-max" name="salary_max" inputmode="numeric" placeholder="125,000" value="${esc(j.salary_max ?? "")}"></div>
-      </div>
+        <label class="check-line${steps ? " span-2" : ""}" for="${prefix}-entry"><input type="checkbox" id="${prefix}-entry" name="entry_level"${j.entry_level || j.employment_type === "internship" ? " checked" : ""}>
+          <span><b>Good for new college graduates</b>: entry level, no prior banking experience needed. Shown under <i>New grads</i>; internships go under <i>Internships</i> automatically.</span></label>
+      </div>`)
+    + step(3, "Description", `
       <div class="field"><label for="${prefix}-summary">Summary</label><input id="${prefix}-summary" name="summary" maxlength="400" required placeholder="One or two sentences shown in the job list" value="${esc(j.summary)}"></div>
-      <div class="field"><label for="${prefix}-desc">Full description</label><textarea id="${prefix}-desc" name="description" rows="7" placeholder="Responsibilities, qualifications, schedule and benefits">${esc(j.description)}</textarea></div>
+      <div class="field"><label for="${prefix}-desc">Full description</label><textarea id="${prefix}-desc" name="description" rows="${steps ? 14 : 7}" placeholder="Responsibilities and qualifications. Tick benefits below and they're added here.">${esc(j.description)}</textarea></div>`)
+    + step(4, "Benefits", `
+      <fieldset class="field benefits" data-benefits="${prefix}">
+        <legend>${steps ? "" : "Benefits "}<span class="hint-inline">Tick what you offer; each one is added to the description as a standard line.</span></legend>
+        <div class="chip-set">${BENEFITS.map(([id, chip, line]) =>
+          `<label class="chip-check"><input type="checkbox" name="benefit" value="${id}" data-prefix="${prefix}"${hasBenefitLine(j.description, line) ? " checked" : ""}><span>${esc(chip)}</span></label>`).join("")}</div>
+        <div class="cta-row benefit-quick"><button class="linkish" type="button" data-benefit-preset="common" data-prefix="${prefix}">Tick the usual package</button>
+          <button class="linkish" type="button" data-benefit-preset="none" data-prefix="${prefix}">Clear all</button></div>
+      </fieldset>`)
+    + step(5, "Optional extras", `
       <div class="field"><label for="${prefix}-apply">Apply link (optional)</label><input id="${prefix}-apply" name="apply_url" type="url" placeholder="https://your-ats.example/job/123" value="${esc(j.apply_url)}"><span class="hint">Leave blank to collect applications here, with résumés, in your dashboard.</span></div>
       <details class="banking-extra"${(j.core_systems || []).length || (j.licenses || []).length ? " open" : ""}>
         <summary>Banking specifics (optional) — core system &amp; licenses</summary>
@@ -261,7 +358,7 @@
           <span class="hint">Candidates with hands-on experience on your core rank higher and can filter straight to you.</span></div>
         <div class="field"><label>Licenses or certifications required or preferred</label>
           <div class="chip-set">${chipChecks("licenses", LICENSES, j.licenses)}</div></div>
-      </details>`;
+      </details>`);
   }
 
   // A set of checkbox chips for an {id: label} map, with the given ids checked.
@@ -278,32 +375,138 @@
         <summary>✨ Skip the writing — let AI draft this posting</summary>
         <div class="field" style="margin-top:0.8rem"><label for="ai-notes">Rough notes (optional)</label>
           <textarea id="ai-notes" rows="3" maxlength="2000" placeholder="Shift hours, team size, must-have experience, benefits — fragments are fine."></textarea>
-          <span class="hint">The job title above is all it needs. Notes here — or location, pay and department below — make the draft sharper. It writes the summary and description; you review and edit before posting.</span></div>
+          <span class="hint">The job title above is all it needs. Notes here, or location and pay below, make the draft sharper. Tick benefits further down instead of typing them.</span></div>
         <button class="btn secondary" id="ai-draft" type="button">Draft it</button>
         <div class="msg" id="ai-msg" hidden></div>
+        <section class="ai-preview" id="ai-preview" hidden aria-live="polite" aria-label="AI draft">
+          <div class="ai-preview-head"><b>Draft</b><span id="ai-status">Writing…</span></div>
+          <p class="ai-preview-summary" id="ai-preview-summary"></p>
+          <div class="prose rich ai-preview-body" id="ai-preview-body"></div>
+          <div class="cta-row" id="ai-actions" hidden>
+            <button class="btn" type="button" id="ai-use">Use this draft</button>
+            <button class="btn secondary" type="button" id="ai-again">Write another</button>
+            <button class="linkish" type="button" id="ai-discard">Discard</button>
+          </div>
+        </section>
       </details>`;
   }
 
+  // Streamed AI drafts: the server marks a late error with this, and answers in two labelled sections.
+  const AI_STREAM_ERROR = "[[BANKJOBZ_ERROR]] ";
+  function aiSections(text) {
+    const out = {};
+    let current = null, buf = [];
+    const flush = () => { if (current) out[current] = buf.join("\n").trim(); buf = []; };
+    for (const line of String(text).split("\n")) {
+      const m = line.match(/^\s*(SUMMARY|DESCRIPTION)\s*:\s*(.*)$/i);
+      if (m) { flush(); current = m[1].toUpperCase(); if (m[2]) buf.push(m[2]); }
+      else if (current) buf.push(line);
+    }
+    flush();
+    return out;
+  }
+
+  // A posting's description as readable HTML: short lines followed by bullets become headings,
+  // "- " lines become lists, everything else paragraphs. Everything is escaped first.
+  function descHtml(text) {
+    const lines = String(text || "").replace(/\r/g, "").split("\n");
+    const isBullet = (l) => /^\s*[-•*]\s+/.test(l);
+    const nextFilled = (i) => { for (let k = i + 1; k < lines.length; k++) if (lines[k].trim()) return lines[k]; return ""; };
+    let html = "", list = [], para = [];
+    const endList = () => { if (list.length) { html += `<ul>${list.map((x) => `<li>${esc(x)}</li>`).join("")}</ul>`; list = []; } };
+    const endPara = () => { if (para.length) { html += `<p>${para.map(esc).join("<br>")}</p>`; para = []; } };
+    lines.forEach((raw, i) => {
+      const line = raw.trim();
+      if (!line) { endList(); endPara(); return; }
+      if (isBullet(line)) { endPara(); list.push(line.replace(/^[-•*]\s+/, "")); return; }
+      endList();
+      const heading = line.length <= 60 && !/[.!?,;]$/.test(line) && (isBullet(nextFilled(i)) || /^(About the role|What you'll do|What you'll bring|Nice to have|Working conditions|Responsibilities|Qualifications|Requirements|Benefits)\b/i.test(line));
+      if (heading) { endPara(); html += `<h3>${esc(line.replace(/:$/, ""))}</h3>`; } else para.push(line);
+    });
+    endList(); endPara();
+    return html;
+  }
+
+  // The draft streams into a preview right under the button, where it's seen at once. "Use this
+  // draft" then puts it in the Summary and Full description fields (with any ticked benefits).
   function bindAiDraft(prefix, extra = () => ({})) {
     const btn = document.getElementById("ai-draft");
     if (!btn) return;
-    btn.addEventListener("click", async () => {
-      const msg = document.getElementById("ai-msg");
-      const val = (id) => document.getElementById(`${prefix}-${id}`)?.value || "";
+    const $ = (id) => document.getElementById(id);
+    const msg = $("ai-msg"), preview = $("ai-preview"), status = $("ai-status");
+    const pSummary = $("ai-preview-summary"), pBody = $("ai-preview-body"), actions = $("ai-actions");
+    const val = (id) => $(`${prefix}-${id}`)?.value || "";
+    let draft = null;
+
+    async function write() {
       if (!val("title").trim()) return showMsg(msg, "Give the role a title first — the assistant builds around it.", true);
+      msg.hidden = true;
+      draft = null;
       btn.disabled = true;
       btn.textContent = "Writing…";
+      preview.hidden = false;
+      preview.classList.add("writing");
+      actions.hidden = true;
+      status.textContent = "Writing… usually 10–20 seconds";
+      pSummary.textContent = "";
+      pBody.innerHTML = "";
       try {
-        const r = await api("/api/ai/posting", { method: "POST", auth: !!key(), body: JSON.stringify({
-          title: val("title"), location: val("location"), category: val("cat"),
+        // The draft streams back as plain text ("SUMMARY:" then "DESCRIPTION:").
+        const headers = { "content-type": "application/json" };
+        if (key()) headers.authorization = "Bearer " + key();
+        const res = await fetch("/api/ai/posting", { method: "POST", headers, body: JSON.stringify({
+          stream: true, title: val("title"), location: val("location"), category: val("cat"),
           work_mode: val("mode"), salary_min: val("min"), salary_max: val("max"),
-          notes: document.getElementById("ai-notes").value, ...extra() }) });
-        document.getElementById(`${prefix}-summary`).value = r.summary;
-        document.getElementById(`${prefix}-desc`).value = r.description;
-        showMsg(msg, "Draft filled in below — read it and make it yours before continuing.", false);
-      } catch (err) { showMsg(msg, err.message, true); }
+          notes: $("ai-notes").value, ...extra() }) });
+        const type = res.headers.get("content-type") || "";
+        if (!res.ok || !type.includes("text/plain")) {
+          const data = type.includes("application/json") ? await res.json().catch(() => ({})) : {};
+          throw new Error(data.error || `The writing assistant hit a problem (error ${res.status}). Try again in a minute.`);
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let text = "";
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          text += decoder.decode(value, { stream: true });
+          const cut = text.indexOf(AI_STREAM_ERROR);
+          if (cut >= 0) throw new Error(text.slice(cut + AI_STREAM_ERROR.length).trim() || "The writing assistant stopped partway. Try again.");
+          const parts = aiSections(text);
+          if (parts.SUMMARY != null) pSummary.textContent = parts.SUMMARY;
+          if (parts.DESCRIPTION != null) { pBody.innerHTML = descHtml(parts.DESCRIPTION); pBody.scrollTop = pBody.scrollHeight; }
+        }
+        const parts = aiSections(text);
+        if (!parts.SUMMARY || !parts.DESCRIPTION) throw new Error("The assistant gave an answer in the wrong shape. Try again.");
+        draft = { summary: parts.SUMMARY.slice(0, 400), description: parts.DESCRIPTION };
+        pSummary.textContent = draft.summary;
+        pBody.innerHTML = descHtml(draft.description);
+        pBody.scrollTop = 0;
+        const filled = val("summary").trim() || val("desc").trim();
+        $("ai-use").textContent = filled ? "Replace the summary and description with this" : "Use this draft";
+        status.textContent = "Done. Read it, then use it or write another.";
+        actions.hidden = false;
+      } catch (err) {
+        preview.hidden = true;
+        showMsg(msg, err.message === "Failed to fetch" ? "Couldn't reach the writing assistant. Check your connection and try again." : err.message, true);
+      }
+      preview.classList.remove("writing");
       btn.disabled = false;
       btn.textContent = "Draft it";
+    }
+
+    btn.addEventListener("click", write);
+    $("ai-again").addEventListener("click", write);
+    $("ai-discard").addEventListener("click", () => { preview.hidden = true; draft = null; });
+    $("ai-use").addEventListener("click", () => {
+      if (!draft) return;
+      $(`${prefix}-summary`).value = draft.summary;
+      const desc = $(`${prefix}-desc`);
+      desc.value = withBenefits(draft.description, chosenBenefitLines(prefix));
+      desc.rows = 18;
+      preview.hidden = true;
+      showMsg(msg, "Added to Summary and Full description below. Check every duty and requirement against the real job before posting.", false);
+      desc.scrollIntoView({ behavior: "smooth", block: "center" });
     });
   }
 
@@ -656,7 +859,7 @@
             <dt>Pay</dt><dd class="salary">${pay ? esc(pay) + " per year" : "Not listed"}</dd>
             ${j.posted_at ? `<dt>Posted</dt><dd>${esc(fmtDate(j.posted_at))}</dd>` : ""}
           </dl>
-          ${j.description ? `<div class="prose">${esc(j.description)}</div>` : ""}
+          ${j.description ? `<div class="prose rich">${descHtml(j.description)}</div>` : ""}
           ${external ? `<p class="source-note">Found on ${esc(j.source_name)}. Listings we gather can close without notice, so confirm the role on the original posting.</p>` : ""}
           <div><button class="linkish" id="save-job" type="button">☆ Save job</button> · <button class="linkish" id="copy-link" type="button">Copy link to this job</button></div>
         </article>
@@ -950,18 +1153,19 @@
     show(card.dataset.mode);
   }
 
+  // The top of the Post a job page: the price first, in one line, then a single sentence.
   const postIntro = (extra = "") => `
-    <section class="post-intro">
+    <header class="post-intro post-head">
       <p class="eyebrow">Post a job</p>
       <h1>${fmtMoney(PLAN.base_cents)} a month for up to ${PLAN.base_limit} postings.</h1>
-      <p class="lede">One plan for your institution, billed monthly by card through Stripe. ${planSentence()} Postings go live right away as Direct listings above sourced jobs, each with its own page in Google's job search. Close and replace postings any time, and cancel from your dashboard.</p>
+      <p class="lede">One plan for your institution. Up to ${PLAN.plus_limit} postings is ${fmtMoney(PLAN.plus_cents)}${PLAN.extra_cents ? `, and each one past ${PLAN.plus_limit} adds ${fmtMoney(PLAN.extra_cents)}` : ""}. Postings go live right away; close or replace them any time.</p>
       ${extra}
-    </section>`;
+    </header>`;
 
   async function viewPost() {
     // Hiring managers need an account first: it's where their postings, applicants and billing live.
     if (!key()) {
-      view.innerHTML = `<div class="wrap post">${postIntro(`<ul class="ticks">
+      view.innerHTML = `<div class="wrap post-page">${postIntro(`<ul class="ticks">
           <li>Your own dashboard: postings, applicants, notes and billing</li>
           <li>Applicants by email and in one place, with résumés</li>
           <li>Protected sign-in: password plus a one-time code</li></ul>`)}${authCard("signup")}</div>`;
@@ -981,16 +1185,18 @@
     if (state.postPreset && !prefill.title) prefill = state.postPreset; // "Post an internship"
     state.postPreset = null;
     view.innerHTML = `
-      <div class="wrap post">
-        ${postIntro(acct ? `<p class="source-note">Posting as <b>${esc(acct.company)}</b>${acct.contact_name ? ` · ${esc(acct.contact_name)}` : ""}. Billed to your account. <a href="#dashboard">Back to dashboard</a></p>` : "")}
-        <form class="panel form" id="post-form" novalidate>
-          <h2>${prefill.title ? "The role (copied from an earlier posting)" : prefill.employment_type === "internship" ? "The internship" : "The role"}</h2>
-          ${!prefill.title && prefill.employment_type === "internship" ? `<p class="source-note">Set up as an internship: it's listed under <i>Internships</i> for students and new grads. Describe the program — length, team, schedule and pay.</p>` : ""}
-          ${roleFields(prefill, "p", aiDraftBox())}
+      <div class="wrap post-page">
+        ${postIntro(acct ? `<p class="post-as">Posting as <b>${esc(acct.company)}</b>${acct.contact_name ? ` · ${esc(acct.contact_name)}` : ""} · <a href="#dashboard">Back to dashboard</a></p>` : "")}
+        <form class="panel form post-form" id="post-form" novalidate>
+          ${prefill.title ? `<p class="source-note">Copied from an earlier posting. Change what you need, then publish.</p>` : ""}
+          ${!prefill.title && prefill.employment_type === "internship" ? `<p class="source-note">Set up as an internship: it's listed under <i>Internships</i> for students and new grads. Describe the program: length, team, schedule and pay.</p>` : ""}
+          ${roleFields(prefill, "p", aiDraftBox(), true)}
           ${honeypot}
-          ${checkoutLine(plan)}
-          <div class="msg" id="post-msg" hidden></div>
-          <div id="post-confirm"></div>
+          <section class="step step-publish" aria-labelledby="p-step-6"><h2 class="step-title" id="p-step-6"><span class="step-n">6</span>Publish</h2>
+            ${checkoutLine(plan)}
+            <div class="msg" id="post-msg" hidden></div>
+            <div id="post-confirm"></div>
+          </section>
         </form>
       </div>`;
 
@@ -1767,12 +1973,12 @@
     try { j = await api(`/api/employer/jobs/${id}`, { auth: true }); }
     catch (err) { return err.status === 401 ? signedOut(err.message) : (view.innerHTML = `<div class="wrap narrow"><p class="msg error">${esc(err.message)}</p><a href="#dashboard">Back to dashboard</a></div>`); }
     view.innerHTML = `
-      <div class="wrap narrow">
+      <div class="wrap post-page">
         <a class="back" href="#dashboard">← Dashboard</a>
-        <form class="panel form" id="edit-form" novalidate style="margin-top:1rem">
+        <form class="panel form post-form" id="edit-form" novalidate style="margin-top:1rem">
           <h1 style="font-size:1.5rem">Edit posting</h1>
           <p class="source-note">${esc(j.company)} · ${jobCode(j.id)}. Changes show on the board right away; billing doesn't change.</p>
-          ${roleFields(j, "e", aiDraftBox())}
+          ${roleFields(j, "e", aiDraftBox(), true)}
           <div class="cta-row"><button class="btn" type="submit">Save changes</button><a class="btn secondary" href="#dashboard">Cancel</a></div>
           <div class="msg" id="edit-msg" hidden></div>
         </form>

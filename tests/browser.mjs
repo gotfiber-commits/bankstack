@@ -125,10 +125,39 @@ try {
       return box?.open === true && titleField.nextElementSibling === box;
     }));
   await emp.fill("#ai-notes", "wires and ACH, team of four");
+  // Benefits: tick boxes, standard lines appear in the description; untick and they go.
+  await emp.fill("#p-desc", "Lead our lakehouse migration.\nJack Henry or Fiserv core experience is a plus.");
+  await emp.check('input[name="benefit"][value="medical"]');
+  await emp.check('input[name="benefit"][value="dental"]');
+  check("ticking benefits adds a Benefits section with standard lines", (await emp.inputValue("#p-desc"))
+    === "Lead our lakehouse migration.\nJack Henry or Fiserv core experience is a plus.\n\nBenefits\n- Medical insurance\n- Dental insurance");
+  await emp.uncheck('input[name="benefit"][value="dental"]');
+  check("…unticking takes its line out", !(await emp.inputValue("#p-desc")).includes("Dental insurance") && (await emp.inputValue("#p-desc")).includes("- Medical insurance"));
+  await emp.click('[data-benefit-preset="common"][data-prefix="p"]');
+  check("'Tick the usual package' adds the common nine", (await emp.locator('input[name="benefit"][data-prefix="p"]:checked').count()) === 9
+    && (await emp.inputValue("#p-desc")).includes("- Employer match on 401(k) contributions") && (await emp.inputValue("#p-desc")).includes("- Paid sick leave"));
+  await shot(emp, "03c-benefits");
+  // Deleting a line by hand unticks its box.
+  await emp.fill("#p-desc", (await emp.inputValue("#p-desc")).replace("- Vision insurance\n", ""));
+  check("…and deleting a line by hand unticks its box", !(await emp.isChecked('input[name="benefit"][value="vision"]')) && await emp.isChecked('input[name="benefit"][value="medical"]'));
+
   await emp.click("#ai-draft");
-  await emp.waitForSelector("#ai-msg:not([hidden])");
+  await emp.waitForSelector("#ai-preview:not([hidden])");
+  check("the draft appears right under the Draft it button", await emp.evaluate(() => {
+    const b = document.getElementById("ai-draft").getBoundingClientRect(), p = document.getElementById("ai-preview").getBoundingClientRect();
+    return p.top > b.bottom && p.top - b.bottom < 120;
+  }));
+  await emp.waitForSelector("#ai-actions:not([hidden])", { timeout: 15000 });
+  check("…formatted with headings and lists while the form is left alone until you choose", (await emp.locator("#ai-preview-body h3").count()) >= 3
+    && (await emp.textContent("#ai-preview-summary")).startsWith("Run daily deposit operations")
+    && (await emp.inputValue("#p-desc")).startsWith("Lead our lakehouse migration.")
+    && (await emp.textContent("#ai-use")).startsWith("Replace"));
+  await shot(emp, "03d-ai-preview");
+  await emp.click("#ai-use");
+  const drafted = await emp.inputValue("#p-desc");
   check("AI drafts the posting into the form", (await emp.inputValue("#p-summary")).startsWith("Run daily deposit operations")
-    && (await emp.inputValue("#p-desc")).includes("What you'll bring"));
+    && drafted.includes("What you'll bring") && drafted.startsWith("About the role") && await emp.isHidden("#ai-preview"));
+  check("…keeping the ticked benefits, after the last list and before the closing line", /- Experience with Fedwire\n\nBenefits\n- Medical insurance[\s\S]*- Paid sick leave\n\nReady\? Apply/.test(drafted), drafted);
   await emp.fill("#p-summary", "Own the enterprise data model across core, lending and call reporting.");
   await shot(emp, "03-post-form");
   check("the first posting's checkout line explains the plan", (await emp.textContent(".checkout-line")).includes("covers up to 5 postings")
@@ -254,6 +283,8 @@ try {
   await cand.goto(`${BASE}/jobs/${jobId}`);
   await cand.waitForSelector(".detail h1");
   check("real /jobs/:id URL opens the job", (await cand.textContent(".detail h1")) === "Senior Data Architect");
+  check("the description shows as headings and bullet lists", (await cand.locator(".detail .prose h3").count()) >= 3
+    && (await cand.locator(".detail .prose li").count()) >= 5 && (await cand.textContent(".detail .prose h3 >> nth=1")) === "What you'll do");
   check("browser tab title names the job", (await cand.title()).startsWith("Senior Data Architect at Shoals Community Bank"));
   await cand.fill("#a-name", "Jordan Lee");
   await cand.fill("#a-email", "jordan@example.test");
@@ -317,6 +348,8 @@ try {
   await emp.click("tr:has-text('Senior Data Architect') td.acts >> text=Edit");
   await emp.waitForSelector("#edit-form");
   check("edit form is prefilled", (await emp.inputValue("#e-title")) === "Senior Data Architect" && (await emp.inputValue("#e-min")) === "115000");
+  check("…with the benefit boxes ticked from the description", await emp.isChecked('input[name="benefit"][data-prefix="e"][value="medical"]')
+    && !(await emp.isChecked('input[name="benefit"][data-prefix="e"][value="vision"]')) && !(await emp.isChecked('input[name="benefit"][data-prefix="e"][value="esop"]')));
   await emp.fill("#e-title", "Lead Data Architect");
   await emp.click("text=Save changes");
   await emp.waitForSelector("#flash:not([hidden])");
@@ -523,7 +556,7 @@ try {
   await emp.click(".early [data-post-internship]");
   await emp.waitForSelector("#post-form");
   check("'Post an internship' opens the form set up as an internship", (await emp.inputValue("#p-emp")) === "internship"
-    && await emp.isChecked("#p-entry") && (await emp.textContent("#post-form h2")) === "The internship");
+    && await emp.isChecked("#p-entry") && (await emp.textContent("#post-form .step-title >> nth=0")).endsWith("The internship"));
   await emp.fill("#p-title", "Summer Banking Internship");
   await emp.fill("#p-location", "Florence, AL");
   await emp.selectOption("#p-cat", "branch-retail");

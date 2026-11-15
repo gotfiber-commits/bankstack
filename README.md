@@ -32,7 +32,10 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 - Take down any listing (a paid one also has its billing cancelled), reopen sourced ones, **add sourced listings** by hand, run the link check on demand.
 
 **AI writing assistant** (optional — appears once `ANTHROPIC_API_KEY` is set)
-- **Employers**: "Let AI draft the summary and description" on the post and edit forms — builds a clean, EEO-safe posting from the fields plus rough notes, filled into the form for them to edit. Better postings, less friction to posting.
+- **Employers**: "Draft it" on the post and edit forms writes a complete posting from just a job title: About the role, What you'll do (8–12 duties), What you'll bring, Nice to have, and Working conditions where the role has them. It draws on how the role normally works at a bank or credit union (duties, controls, regulations, typical experience), uses "members" for credit unions, and never invents employer-only facts (pay, benefits, hours, systems). The draft streams into the form as it's written (about 10–20 seconds). The default model is `claude-haiku-5-5`; set `ANTHROPIC_MODEL=claude-sonnet-5-5` for richer drafts at a higher cost per draft.
+- Job pages show the description with headings and bullet lists, and Google's job data gets the same structure.
+- The draft streams into a preview right under "Draft it"; "Use this draft" puts it into the Summary and Full description fields. If Department disagrees with the title (it starts on a default), the draft follows the title.
+- **Benefits checklist** on the post and edit forms: 22 common benefits (medical, dental, vision, life, disability, 401(k) and match, ESOP, pension, PTO, paid holidays, sick leave, parental leave, HSA, FSA, EAP, tuition, training and banking school, wellness, employee banking perks, incentive pay, flexible scheduling). Ticking one adds a standard line under a "Benefits" heading in the description; unticking removes it; "Tick the usual package" picks the common nine. The description is the only place benefits are stored, so the boxes always match what the posting says.
 - **Candidates**: "Tailor my application" on any Direct job — a cover note and résumé-angle tips generated **only from what's actually in their résumé** (the prompt forbids inventing experience), prefilled and editable before one-click sending.
 - Guardrails: per-person daily limit (`AI_DAILY_LIMIT`, default 20) logged in `ai_usage`; the whole feature hides when no key is set; drafts always pass through human hands. Costs run well under a cent per draft on Haiku-class models — set a spend cap in the Anthropic console.
 
@@ -60,7 +63,7 @@ netlify/lib/             shared (db, Stripe, validation), banking (core systems,
                          institutions (FDIC/NCUA sync), match, email, files (résumés), extract, tasks
 db/schema.sql            every table; safe to re-run — it upgrades older databases in place
 scripts/seed.mjs         creates the schema and loads the seed jobs
-tests/                   e2e.mjs (347 API checks), browser.mjs (106 checks in real Chromium),
+tests/                   e2e.mjs (355 API checks), browser.mjs (115 checks in real Chromium),
                          fake Stripe, fake FDIC/NCUA, local server
 ```
 
@@ -103,9 +106,9 @@ Both suites run the real function code against a real Postgres database, with a 
 ```bash
 # Postgres on localhost (e.g. docker run -p 5432:5432 -e POSTGRES_HOST_AUTH_METHOD=trust postgres:16)
 export TEST_DATABASE_ADMIN_URL=postgres://postgres@127.0.0.1:5432/postgres
-npm run test:e2e          # 347 checks: posting, early careers, hiring-plan billing (tiers, upgrades, closes, renewals, declines), sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
+npm run test:e2e          # 355 checks: posting, early careers, hiring-plan billing (tiers, upgrades, closes, renewals, declines), sign-in, applying, résumés, saved jobs, filters, talent pool, directory, AI assist, privacy, alerts, SEO, admin
 npx playwright install chromium
-npm run test:browser      # 106 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
+npm run test:browser      # 115 checks clicking through the real pages, desktop and phone; screenshots in tests/screenshots
 ```
 
 ## API
@@ -135,7 +138,7 @@ npm run test:browser      # 106 checks clicking through the real pages, desktop 
 | POST | `/api/candidate/apply` | one-click apply `{ job_id, cover_note? }` |
 | GET | `/api/employer/talent?category=&state=&core_system=&license=` | anonymous talent pool (needs a live posting) |
 | POST | `/api/employer/talent/:id/invite` | `{ job_id, note? }` → invite email to the candidate |
-| POST | `/api/ai/posting` | `{ title, location?, category?, notes?… }` → `{ summary, description }` draft |
+| POST | `/api/ai/posting` | `{ title, location?, category?, notes?, stream? }` → `{ summary, description }`, or with `stream: true` the draft as streamed text |
 | POST | `/api/ai/apply-assist` | Bearer ck_: `{ job_id }` → `{ cover_note, tips[] }` from their own résumé |
 | POST | `/api/admin/institutions/sync` | `{ source: "fdic"\|"ncua", offset }` → one page of the directory |
 | GET | `/banks`, `/banks/:state`, `/banks/:slug` | server-rendered institution directory |

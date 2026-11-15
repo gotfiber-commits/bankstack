@@ -41,6 +41,82 @@ export async function askClaude({ system, user, maxTokens = 1200 }) {
     console.error("Anthropic network error", err?.message);
     throw aiError("Couldn't reach the writing assistant. Try again in a minute.");
   }
+  await throwIfFailed(res);
+  const data = await res.json();
+  return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
+}
+
+// Streams the answer as it's written: an async iterator of text pieces. Errors before the
+// first byte throw (so the caller can still answer with a JSON error and the right status);
+// errors after that throw from the iterator. Used for long drafts, which would outlast a
+// plain request's time limit.
+export async function streamClaude({ system, user, maxTokens = 2000 }) {
+  const firstByteMs = Number(process.env.ANTHROPIC_TIMEOUT_MS || 15000);
+  const totalMs = Number(process.env.ANTHROPIC_STREAM_TOTAL_MS || 50000);
+  const abort = new AbortController();
+  const firstTimer = setTimeout(() => abort.abort(new DOMException("first byte", "TimeoutError")), firstByteMs);
+  const totalTimer = setTimeout(() => abort.abort(new DOMException("total", "TimeoutError")), totalMs);
+  let res;
+  try {
+    res = await fetch(`${BASE()}/v1/messages`, {
+      method: "POST",
+      signal: abort.signal,
+      headers: {
+        "x-api-key": process.env.ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: MODEL(), max_tokens: maxTokens, stream: true, system,
+        messages: [{ role: "user", content: user }],
+      }),
+    });
+  } catch (err) {
+    clearTimeout(firstTimer); clearTimeout(totalTimer);
+    if (abort.signal.aborted || err?.name === "TimeoutError" || err?.name === "AbortError") {
+      console.error("Anthropic stream timeout before first byte");
+      throw aiError("The writing assistant took too long this time. Click it again — it's usually quick.", 504);
+    }
+    console.error("Anthropic network error", err?.message);
+    throw aiError("Couldn't reach the writing assistant. Try again in a minute.");
+  }
+  clearTimeout(firstTimer);
+  try { await throwIfFailed(res); } catch (err) { clearTimeout(totalTimer); throw err; }
+
+  return (async function* () {
+    const decoder = new TextDecoder();
+    let buf = "";
+    try {
+      for await (const chunk of res.body) {
+        buf += decoder.decode(chunk, { stream: true });
+        let cut;
+        while ((cut = buf.indexOf("\n\n")) >= 0) {
+          const event = buf.slice(0, cut);
+          buf = buf.slice(cut + 2);
+          const dataLine = event.split("\n").find((l) => l.startsWith("data:"));
+          if (!dataLine) continue;
+          let data;
+          try { data = JSON.parse(dataLine.slice(5).trim()); } catch { continue; }
+          if (data.type === "content_block_delta" && data.delta?.type === "text_delta") yield data.delta.text;
+          else if (data.type === "error") {
+            console.error("Anthropic stream error", JSON.stringify(data.error || {}).slice(0, 300));
+            throw aiError(data.error?.type === "overloaded_error"
+              ? "The writing assistant is busy right now. Try again in a minute."
+              : "The writing assistant stopped partway. Try again.");
+          } else if (data.type === "message_stop") return;
+        }
+      }
+    } catch (err) {
+      if (err?.status) throw err;
+      if (abort.signal.aborted) throw aiError("The writing assistant took too long to finish. Try again.", 504);
+      throw aiError("The writing assistant stopped partway. Try again.");
+    } finally {
+      clearTimeout(totalTimer);
+    }
+  })();
+}
+
+async function throwIfFailed(res) {
   if (!res.ok) {
     const detail = (await res.text().catch(() => "")).slice(0, 400);
     console.error("Anthropic error", res.status, detail);
@@ -59,8 +135,6 @@ export async function askClaude({ system, user, maxTokens = 1200 }) {
     }
     throw aiError("The writing assistant hit a problem. Try again in a minute.");
   }
-  const data = await res.json();
-  return (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n").trim();
 }
 
 // Simple, honest rate limiting: N uses per user (or IP) per day, so one person
