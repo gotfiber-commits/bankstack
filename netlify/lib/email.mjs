@@ -27,17 +27,17 @@ export async function sendEmail({ to, subject, text, html, replyTo }) {
 
 // Simple, readable layout that renders well in every mail client.
 export function layout({ heading, paragraphs = [], button, footer }) {
-  const html = `<!doctype html><html><body style="margin:0;background:#f2f4f1;font-family:Arial,Helvetica,sans-serif;color:#14211c">
+  const html = `<!doctype html><html><body style="margin:0;background:#f5f7fa;font-family:Arial,Helvetica,sans-serif;color:#0c1b33">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td align="center" style="padding:24px 12px">
-  <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #d4dcd6;border-radius:6px">
-    <tr><td style="padding:18px 24px;border-bottom:1px solid #d4dcd6;font-weight:bold;font-size:16px">${esc(BRAND)}</td></tr>
+  <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid #dbe1ea;border-radius:6px">
+    <tr><td style="padding:18px 24px;border-bottom:4px solid #c8102e;font-weight:bold;font-size:16px;color:#0a2a5e">${esc(BRAND)}</td></tr>
     <tr><td style="padding:24px">
       <h1 style="font-size:20px;margin:0 0 12px">${esc(heading)}</h1>
       ${paragraphs.map((p) => `<p style="font-size:15px;line-height:1.5;margin:0 0 12px">${p}</p>`).join("")}
-      ${button ? `<p style="margin:20px 0 4px"><a href="${esc(button.url)}" style="display:inline-block;background:#1d6a4e;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 18px;border-radius:6px">${esc(button.label)}</a></p>
-      <p style="font-size:12px;color:#5a6a63;margin:8px 0 0;word-break:break-all">${esc(button.url)}</p>` : ""}
+      ${button ? `<p style="margin:20px 0 4px"><a href="${esc(button.url)}" style="display:inline-block;background:#c8102e;color:#ffffff;text-decoration:none;font-weight:bold;padding:12px 18px;border-radius:6px">${esc(button.label)}</a></p>
+      <p style="font-size:12px;color:#55627a;margin:8px 0 0;word-break:break-all">${esc(button.url)}</p>` : ""}
     </td></tr>
-    ${footer ? `<tr><td style="padding:14px 24px;border-top:1px solid #d4dcd6;font-size:12px;color:#5a6a63">${footer}</td></tr>` : ""}
+    ${footer ? `<tr><td style="padding:14px 24px;border-top:1px solid #dbe1ea;font-size:12px;color:#55627a">${footer}</td></tr>` : ""}
   </table></td></tr></table></body></html>`;
   return html;
 }

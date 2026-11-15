@@ -315,6 +315,19 @@
   });
 
   // Role fields shared by "Post a job", "Edit posting" and the admin's "Add a sourced listing".
+  // Work schedule: three big buttons (radio inputs underneath, so the form still sends work_mode).
+  const MODE_HINTS = { onsite: "At the branch or office every day", remote: "Works from home", hybrid: "Some days in the office, some at home" };
+  function workModePicker(prefix, current) {
+    const pick = MODES[current] ? current : "onsite";
+    return `<fieldset class="field mode-pick" id="${prefix}-mode" data-value="${pick}">
+      <legend>Work schedule</legend>
+      <div class="mode-opts">${["onsite", "remote", "hybrid"].map((k) => `
+        <label class="mode-opt"><input type="radio" name="work_mode" value="${k}" id="${prefix}-mode-${k}"${k === pick ? " checked" : ""}>
+          <span><b>${MODES[k]}</b><small>${MODE_HINTS[k]}</small></span></label>`).join("")}
+      </div>
+    </fieldset>`;
+  }
+
   // steps: lay the fields out as numbered steps across the page (post and edit forms).
   function roleFields(j = {}, prefix = "p", afterTitle = "", steps = false) {
     const step = (n, title, body) => steps
@@ -325,9 +338,9 @@
       <div class="field"><label for="${prefix}-title">Job title</label><input id="${prefix}-title" name="title" required placeholder="Senior Loan Officer" value="${esc(j.title)}"></div>
       ${afterTitle}`)
     + step(2, "Details", `
-      <div class="${row}">
+      ${workModePicker(prefix, j.work_mode)}
+      <div class="${steps ? "row-3" : "row-2"}">
         <div class="field"><label for="${prefix}-location">Location</label><input id="${prefix}-location" name="location" required placeholder="Birmingham, AL" value="${esc(j.location)}"></div>
-        <div class="field"><label for="${prefix}-mode">Arrangement</label><select id="${prefix}-mode" name="work_mode">${options(MODES, j.work_mode)}</select></div>
       ${steps ? "" : `</div><div class="row-2">`}
         <div class="field"><label for="${prefix}-cat">Department</label><select id="${prefix}-cat" name="category">${options(CATEGORIES, j.category)}</select></div>
         <div class="field"><label for="${prefix}-emp">Employment</label><select id="${prefix}-emp" name="employment_type" data-entry-box="${prefix}-entry">${options(EMPLOYMENT, j.employment_type)}</select></div>
@@ -435,7 +448,9 @@
     const $ = (id) => document.getElementById(id);
     const msg = $("ai-msg"), preview = $("ai-preview"), status = $("ai-status");
     const pSummary = $("ai-preview-summary"), pBody = $("ai-preview-body"), actions = $("ai-actions");
-    const val = (id) => $(`${prefix}-${id}`)?.value || "";
+    const val = (id) => id === "mode"
+      ? (document.querySelector(`input[name="work_mode"][id^="${prefix}-mode-"]:checked`)?.value || "")
+      : $(`${prefix}-${id}`)?.value || "";
     let draft = null;
 
     async function write() {

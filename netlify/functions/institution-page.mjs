@@ -42,6 +42,9 @@ function page({ title, description, canonical, body, noindex = false, status = 2
 <meta name="description" content="${esc(description)}">
 ${canonical ? `<link rel="canonical" href="${esc(canonical)}">` : ""}
 ${noindex ? `<meta name="robots" content="noindex, follow">` : ""}
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..900&family=IBM+Plex+Mono:wght@400;500&family=Source+Sans+3:wght@400;600;700&display=swap">
 <link rel="stylesheet" href="/app.css">
 <style>
   .dir { max-width: 60rem; margin: 0 auto; padding: 2rem 16px 4rem; }

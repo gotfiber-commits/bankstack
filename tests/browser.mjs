@@ -32,7 +32,13 @@ const newPage = async (ctxOpts = {}) => {
   page.on("pageerror", (e) => pageErrors.push(e.message));
   page.on("console", (m) => { if (m.type() === "error" && !/Failed to load resource/.test(m.text())) pageErrors.push(m.text()); });
   // Google Fonts are unreachable in the sandbox; answer with empty CSS so pages don't wait on them.
-  await ctx.route(/fonts\.(googleapis|gstatic)\.com/, (r) => r.fulfill({ status: 200, contentType: "text/css", body: "" }));
+  // Set TEST_FONTS_CSS / TEST_FONTS_DIR to serve the real fonts locally for screenshots.
+  await ctx.route(/fonts\.(googleapis|gstatic)\.com/, (r) => {
+    const u = new URL(r.request().url());
+    if (process.env.TEST_FONTS_CSS && u.hostname === "fonts.googleapis.com") return r.fulfill({ status: 200, contentType: "text/css", body: readFileSync(process.env.TEST_FONTS_CSS) });
+    if (process.env.TEST_FONTS_DIR && u.pathname.startsWith("/__local/")) return r.fulfill({ status: 200, contentType: "font/woff2", body: readFileSync(process.env.TEST_FONTS_DIR + u.pathname.slice(8)) });
+    return r.fulfill({ status: 200, contentType: "text/css", body: "" });
+  });
   // Stripe's hosted checkout page: "pay" through the fake Stripe, then follow Stripe's redirect back.
   await ctx.route("https://checkout.stripe.test/**", async (route) => {
     const session = stack.lastSession();
@@ -110,7 +116,15 @@ try {
     (await emp.locator("#c-company, #c-email").count()) === 0 && (await emp.textContent(".post-intro")).includes("Posting as Shoals Community Bank"));
   await emp.fill("#p-title", "Senior Data Architect");
   await emp.fill("#p-location", "Florence, AL");
-  await emp.selectOption("#p-mode", "hybrid");
+  check("work schedule shows On-site, Remote and Hybrid buttons, On-site picked to start",
+    JSON.stringify(await emp.$$eval("#p-mode .mode-opt b", (els) => els.map((e) => e.textContent))) === '["On-site","Remote","Hybrid"]'
+    && await emp.isChecked("#p-mode-onsite"));
+  await emp.click('#p-mode label:has(#p-mode-remote)');
+  check("clicking a work schedule button selects it", await emp.isChecked("#p-mode-remote") && !(await emp.isChecked("#p-mode-onsite")));
+  await emp.click('#p-mode label:has(#p-mode-hybrid)');
+  await emp.waitForTimeout(250); // let the color transition finish
+  const modeLook = await emp.$eval("#p-mode-hybrid + span", (el) => getComputedStyle(el).backgroundColor);
+  check("the picked work schedule button is filled in navy", modeLook === "rgb(10, 42, 94)", modeLook);
   await emp.selectOption("#p-cat", "data-analytics");
   await emp.fill("#p-min", "115,000");
   await emp.fill("#p-max", "140,000");
@@ -348,6 +362,7 @@ try {
   await emp.click("tr:has-text('Senior Data Architect') td.acts >> text=Edit");
   await emp.waitForSelector("#edit-form");
   check("edit form is prefilled", (await emp.inputValue("#e-title")) === "Senior Data Architect" && (await emp.inputValue("#e-min")) === "115000");
+  check("edit form keeps the Hybrid work schedule", await emp.isChecked("#e-mode-hybrid") && !(await emp.isChecked("#e-mode-onsite")));
   check("…with the benefit boxes ticked from the description", await emp.isChecked('input[name="benefit"][data-prefix="e"][value="medical"]')
     && !(await emp.isChecked('input[name="benefit"][data-prefix="e"][value="vision"]')) && !(await emp.isChecked('input[name="benefit"][data-prefix="e"][value="esop"]')));
   await emp.fill("#e-title", "Lead Data Architect");

@@ -28,7 +28,7 @@ export async function runAlertDigest(base = process.env.URL || "http://localhost
       html: layout({
         heading: `New roles this week`,
         paragraphs: jobs.map((j) =>
-          `<a href="${base}/jobs/${j.id}" style="color:#1d6a4e;font-weight:bold">${esc(j.title)}</a><br>`
+          `<a href="${base}/jobs/${j.id}" style="color:#0a2a5e;font-weight:bold">${esc(j.title)}</a><br>`
           + `${esc(j.company)} · ${esc(j.location)}${pay(j) ? ` · ${pay(j)}` : ""}`),
         button: { label: "See all positions", url: `${base}/#jobs` },
         footer: `You're getting this because you signed up for ${esc(BRAND)} alerts. <a href="${unsubscribe}">Unsubscribe</a>.`,
