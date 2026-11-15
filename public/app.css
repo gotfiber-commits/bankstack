@@ -665,3 +665,21 @@ label.check-line[for$="-entry"] input { margin-top: 0.2rem; }
   .row-4 .span-2 { grid-column: auto; }
   .step-publish .btn-lg { width: 100%; }
 }
+
+/* Contact us */
+.contact-page { max-width: 860px; padding-block: 2rem 3rem; display: flex; flex-direction: column; gap: 1.5rem; }
+.contact-head { display: flex; flex-direction: column; align-items: flex-start; gap: 0.75rem; }
+.contact-head h1 { font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 800; letter-spacing: -0.02em; margin: 0; }
+.contact-head .lede { margin: 0; max-width: 60ch; color: var(--muted); font-size: 1.05rem; }
+.contact-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+.contact-card { border: 1px solid var(--line); border-radius: 6px; padding: 0.9rem 1rem; }
+.contact-card h2 { font-size: 0.95rem; margin: 0 0 0.35rem; }
+.contact-card p { margin: 0; font-size: 0.9rem; color: var(--muted); line-height: 1.5; }
+.contact-form h2 { margin-top: 0; }
+.contact-form .cta-row { align-items: center; }
+@media (max-width: 760px) { .contact-cards { grid-template-columns: 1fr; } }
+.inbox { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.inbox li { padding: 0.75rem 0; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 0.25rem; }
+.inbox li:first-child { border-top: 0; padding-top: 0; }
+.inbox-head { display: flex; flex-wrap: wrap; gap: 0.25rem 0.6rem; align-items: baseline; }
+.inbox-body { margin: 0.2rem 0; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 12rem; overflow: auto; }

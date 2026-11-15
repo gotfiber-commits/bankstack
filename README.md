@@ -30,6 +30,11 @@ A job board for every kind of job at banks and credit unions: branch, lending, c
 **You (site owner)** — `/#admin`
 - Monthly recurring revenue, paid postings live, unpaid starts, sourced listings, employers, applications this week, alert subscribers.
 - Take down any listing (a paid one also has its billing cancelled), reopen sourced ones, **add sourced listings** by hand, run the link check on demand.
+- **Contact messages**: the latest 50 from the Contact us form, each with a Reply link.
+
+**Contact us** — `/#contact` (in the header and every footer)
+- Basic info for employers, job seekers and listing corrections, an **Email administrator@bankjobz.com** button (opens their mail app), and a form: name, email, institution (optional), topic, message.
+- The form emails `CONTACT_TO` (default `administrator@bankjobz.com`) with the sender as Reply-To, so you answer with plain Reply. Nothing is emailed to the address typed in the form, so it can't be used to send mail to strangers. Every message is also saved, so nothing is lost if an email fails, and shows in `/#admin`. Up to 5 messages an hour per network and per sender address; a hidden honeypot field stops simple bots. Messages are deleted after a year.
 
 **AI writing assistant** (optional — appears once `ANTHROPIC_API_KEY` is set)
 - **Employers**: "Draft it" on the post and edit forms writes a complete posting from just a job title: About the role, What you'll do (8–12 duties), What you'll bring, Nice to have, and Working conditions where the role has them. It draws on how the role normally works at a bank or credit union (duties, controls, regulations, typical experience), uses "members" for credit unions, and never invents employer-only facts (pay, benefits, hours, systems). The draft streams into the form as it's written (about 10–20 seconds). The default model is `claude-haiku-5-5`; set `ANTHROPIC_MODEL=claude-sonnet-5-5` for richer drafts at a higher cost per draft.
@@ -77,7 +82,7 @@ Paste the whole of `db/schema.sql` into the Neon SQL Editor and click Run — it
 2. **Stripe** (test mode first):
    - No product or price to create by hand: after deploying, open `/#admin` → **Billing setup**, enter the monthly price for each posting over 10, and click **Create the plan in Stripe**. It makes one graduated monthly price ($99 up to 5, $159.99 up to 10, + your amount each after).
    - Settings → Billing → **Customer portal**: turn it on for cards, invoices and cancelling. Leave **"Customers can switch plans" and "update quantities" off**, because the site sets the plan's quantity itself from the number of live postings.
-3. **Resend**: add and verify your domain, create an API key. `EMAIL_FROM` must use that domain.
+3. **Resend**: add and verify your domain, create an API key. `EMAIL_FROM` must use that domain. Make sure the `administrator@bankjobz.com` mailbox exists, since the Contact us form sends there (or set `CONTACT_TO` to another address).
 4. **Seed the database** from your computer:
    ```bash
    npm install
@@ -148,6 +153,7 @@ npm run test:browser      # 115 checks clicking through the real pages, desktop 
 | POST | `/api/employer/applications/:id/status` | `{ status }` |
 | GET | `/api/employer/applications/:id/resume` | download |
 | POST | `/api/employer/billing` | Stripe billing portal |
+| POST | `/api/contact` | `{ name, email, organization?, topic, message }` → `{ ok }`; topic is general, employer, billing, candidate, listing or partnership |
 | GET/POST | `/api/admin…` | Bearer `ADMIN_TOKEN` |
 | GET | `/jobs/:id`, `/sitemap.xml`, `/robots.txt` | server-rendered for search engines |
 

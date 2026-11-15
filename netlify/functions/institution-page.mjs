@@ -69,12 +69,12 @@ ${noindex ? `<meta name="robots" content="noindex, follow">` : ""}
 </head>
 <body>
 <header class="site-head"><div class="wrap"><a class="brand" href="/">${BRAND}</a>
-<nav class="nav"><a href="/#jobs">Current positions</a><a href="/banks">Bank directory</a><a class="cta" href="/#post">Post a job</a></nav></div></header>
+<nav class="nav"><a href="/#jobs">Current positions</a><a href="/banks">Bank directory</a><a href="/#contact">Contact</a><a class="cta" href="/#post">Post a job</a></nav></div></header>
 <main class="dir">
 ${body}
 </main>
 <footer class="site-foot"><div class="wrap">
-<span>${BRAND}. Jobs at banks and credit unions. <a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a> · <a href="/banks">Directory</a></span>
+<span>${BRAND}. Jobs at banks and credit unions. <a href="/privacy.html">Privacy</a> · <a href="/terms.html">Terms</a> · <a href="/banks">Directory</a> · <a href="/#contact">Contact us</a></span>
 <span>Directory figures come from public FDIC and NCUA data and may lag the institution's own reporting. ${BRAND} is not affiliated with or endorsed by the institutions shown.</span>
 </div></footer>
 </body>

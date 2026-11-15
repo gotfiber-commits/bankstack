@@ -112,7 +112,8 @@ export async function pruneAuth() {
     WHERE expires_at < now() OR revoked_at < now() - interval '30 days' OR last_seen_at < now() - interval '30 days' RETURNING id`;
   const devices = await sql`DELETE FROM employer_devices WHERE expires_at < now() RETURNING id`;
   const usage = await sql`DELETE FROM ai_usage WHERE created_at < now() - interval '30 days' RETURNING id`;
-  return { challenges: challenges.length, sessions: sessions.length, devices: devices.length, ai_usage: usage.length };
+  const contact = await sql`DELETE FROM contact_messages WHERE created_at < now() - interval '365 days' RETURNING id`;
+  return { challenges: challenges.length, sessions: sessions.length, devices: devices.length, ai_usage: usage.length, contact: contact.length };
 }
 
 export { siteUrl };

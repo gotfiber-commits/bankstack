@@ -1346,6 +1346,93 @@
     document.getElementById("a-linkpw")?.focus();
   }
 
+  // ---- Contact us ----
+  const CONTACT_TO = "administrator@bankjobz.com";
+  const CONTACT_TOPICS = {
+    general: "General question",
+    employer: "Posting jobs or my employer account",
+    billing: "Billing and my plan",
+    candidate: "Job seeker help",
+    listing: "A listing that's wrong or should come down",
+    partnership: "Partnerships and advertising",
+  };
+
+  function viewContact() {
+    const mailto = `mailto:${CONTACT_TO}?subject=${encodeURIComponent("Question for BankJobz")}`;
+    const preset = key() ? "employer" : "";
+    view.innerHTML = `
+      <div class="wrap contact-page">
+        <header class="contact-head">
+          <h1>Contact us</h1>
+          <p class="lede">Questions about posting jobs, your plan, a listing or your job search? Send us a message and we'll reply by email.</p>
+          <a class="btn secondary" id="contact-mailto" href="${mailto}">Email ${CONTACT_TO}</a>
+        </header>
+
+        <div class="contact-cards">
+          <div class="contact-card"><h2>Banks &amp; credit unions</h2>
+            <p>$99 a month covers up to 5 live postings. <a href="#post">Post a job</a> or <a href="#dashboard">sign in</a> to manage your plan.</p></div>
+          <div class="contact-card"><h2>Job seekers</h2>
+            <p>Browse <a href="#jobs">current positions</a>. Questions about an application go to the employer named on the posting.</p></div>
+          <div class="contact-card"><h2>Listing corrections</h2>
+            <p>To claim, correct or remove a listing, pick that topic below or email <a href="mailto:listings@bankjobz.com">listings@bankjobz.com</a>.</p></div>
+        </div>
+
+        <form class="panel form contact-form" id="contact-form" novalidate>
+          <h2>Send a message</h2>
+          <div class="row-2">
+            <div class="field"><label for="c-name">Your name</label><input id="c-name" name="name" autocomplete="name" maxlength="120" required></div>
+            <div class="field"><label for="c-email">Email</label><input id="c-email" name="email" type="email" autocomplete="email" maxlength="200" required><span class="hint">We reply to this address.</span></div>
+          </div>
+          <div class="row-2">
+            <div class="field"><label for="c-org">Bank, credit union or company (optional)</label><input id="c-org" name="organization" autocomplete="organization" maxlength="160"></div>
+            <div class="field"><label for="c-topic">What's this about?</label><select id="c-topic" name="topic" required>
+              <option value="" ${preset ? "" : "selected"} disabled>Choose a topic</option>
+              ${Object.entries(CONTACT_TOPICS).map(([k, v]) => `<option value="${k}" ${k === preset ? "selected" : ""}>${esc(v)}</option>`).join("")}
+            </select></div>
+          </div>
+          <div class="field"><label for="c-message">Message</label><textarea id="c-message" name="message" rows="7" maxlength="5000" required></textarea>
+            <span class="hint" id="c-count">Up to 5,000 characters.</span></div>
+          ${honeypot}
+          <div class="cta-row">
+            <button class="btn" type="submit">Send message</button>
+            <span class="source-note">Sends to ${CONTACT_TO}</span>
+          </div>
+          <div class="msg" id="contact-msg" hidden></div>
+        </form>
+      </div>`;
+
+    const form = document.getElementById("contact-form");
+    const box = document.getElementById("c-message");
+    const count = document.getElementById("c-count");
+    box.addEventListener("input", () => {
+      const n = box.value.length;
+      count.textContent = n > 4500 ? `${(5000 - n).toLocaleString()} characters left.` : "Up to 5,000 characters.";
+    });
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = document.getElementById("contact-msg");
+      const data = Object.fromEntries(new FormData(form));
+      const problem = !data.name.trim() ? ["c-name", "Add your name."]
+        : !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.email.trim()) ? ["c-email", "Add an email address we can reply to."]
+        : !data.topic ? ["c-topic", "Pick what your message is about."]
+        : data.message.trim().length < 10 ? ["c-message", "Add a little more detail to your message."] : null;
+      if (problem) { showMsg(msg, problem[1], true); document.getElementById(problem[0]).focus(); return; }
+      msg.hidden = true;
+      const btn = form.querySelector("button[type=submit]");
+      btn.disabled = true; btn.textContent = "Sending…";
+      try {
+        await api("/api/contact", { method: "POST", body: JSON.stringify(data) });
+        form.innerHTML = `<h2>Message sent</h2>
+          <p>Thanks, ${esc(data.name.trim())}. We'll reply to <b>${esc(data.email.trim())}</b>.</p>
+          <p class="source-note">Need to add something? Email <a href="${mailto}">${CONTACT_TO}</a>.</p>`;
+        form.setAttribute("aria-live", "polite");
+      } catch (err) {
+        showMsg(msg, err.message, true);
+        btn.disabled = false; btn.textContent = "Send message";
+      }
+    });
+  }
+
   async function viewWelcome() {
     const sessionId = new URLSearchParams(location.search).get("session_id");
     view.innerHTML = `<div class="wrap narrow"><section class="panel" id="welcome"><p>Confirming your payment…</p></section></div>`;
@@ -2105,6 +2192,16 @@
                 : `<tr><td colspan="4" class="source-note">No employers yet.</td></tr>`}</tbody>
             </table></div>
           </section>
+          <section class="panel" id="admin-messages">
+            <h2>Contact messages</h2>
+            ${(d.messages || []).length ? `<ul class="inbox">${d.messages.map((m) => `<li>
+              <div class="inbox-head"><b>${esc(m.name)}</b>${m.organization ? ` · ${esc(m.organization)}` : ""}
+                <span class="source-note">${esc(fmtDate(m.created_at))}${m.emailed ? "" : " · not emailed"}</span></div>
+              <div class="source-note">${esc(CONTACT_TOPICS[m.topic] || m.topic)}</div>
+              <p class="inbox-body">${esc(m.message)}</p>
+              <a href="mailto:${esc(m.email)}?subject=${encodeURIComponent("Re: your BankJobz message")}">Reply to ${esc(m.email)}</a>
+            </li>`).join("")}</ul>` : `<p class="source-note">No messages yet.</p>`}
+          </section>
         </div>
       </div>`;
 
@@ -2609,6 +2706,7 @@
     else if (h === "saved") viewSaved();
     else if (h === "applications") viewApplications();
     else if (h === "admin") viewAdmin();
+    else if (h === "contact") viewContact();
     else viewHome();
     window.scrollTo(0, 0);
   }

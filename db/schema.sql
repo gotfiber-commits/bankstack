@@ -309,3 +309,21 @@ WHERE employer_id IS NULL AND entry_level = false
   AND (employment_type = 'internship'
        OR (title ~* '(\mintern(ship)?s?\M|trainee|apprentice|entry[- ]level|new grad|graduate|junior|\mjr\M|rotational|teller|universal banker|member service|customer service|personal banker|deposit servicer|loan servicing|hire ahead|staff accountant|\massociate\M|\m(analyst|specialist|representative|banker|clerk|processor|technician) i\M)'
            AND title !~* '(senior|\msr\M|lead|manager|director|vice president|\mvp\M|\mavp\M|head of|principal|chief|controller|officer|\mii\M|\miii\M)'));
+
+-- Contact form messages: kept so nothing is lost if an email fails, and listed in the admin console.
+-- net_tag / mail_tag are hashes of the sender's network and address, used only for rate limiting.
+CREATE TABLE IF NOT EXISTS contact_messages (
+  id           BIGSERIAL PRIMARY KEY,
+  name         TEXT NOT NULL,
+  email        TEXT NOT NULL,
+  organization TEXT,
+  topic        TEXT NOT NULL,
+  message      TEXT NOT NULL,
+  net_tag      TEXT NOT NULL,
+  mail_tag     TEXT NOT NULL,
+  emailed      BOOLEAN NOT NULL DEFAULT false,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS contact_messages_net_idx ON contact_messages (net_tag, created_at);
+CREATE INDEX IF NOT EXISTS contact_messages_mail_idx ON contact_messages (mail_tag, created_at);
+CREATE INDEX IF NOT EXISTS contact_messages_created_idx ON contact_messages (created_at DESC);

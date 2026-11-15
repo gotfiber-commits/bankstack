@@ -591,6 +591,58 @@ try {
   check("on a phone the banners stack, with no sideways scrolling", stacked && !phoneOverflow);
   await shot(phoneHome, "14-early-phone");
 
+  section("Contact us");
+  const visitor = await newPage();
+  await visitor.goto(BASE + "/");
+  await visitor.click('.site-head nav a[href="#contact"]');
+  await visitor.waitForSelector("#contact-form");
+  check("Contact link in the header opens the contact page, marked current",
+    (await visitor.textContent(".contact-head h1")) === "Contact us"
+    && (await visitor.getAttribute('.site-head nav a[href="#contact"]', "aria-current")) === "page");
+  check("footer links to the contact page", await visitor.locator('.site-foot a[href="/#contact"]').count() === 1);
+  check("email button opens a message to administrator@bankjobz.com",
+    (await visitor.getAttribute("#contact-mailto", "href")).startsWith("mailto:administrator@bankjobz.com?subject=")
+    && (await visitor.textContent("#contact-mailto")).trim() === "Email administrator@bankjobz.com");
+  check("a visitor who isn't signed in picks a topic themselves", (await visitor.inputValue("#c-topic")) === "");
+  await visitor.click("#contact-form button[type=submit]");
+  check("sending an empty form explains what's missing and focuses the name",
+    (await visitor.textContent("#contact-msg")) === "Add your name." && await visitor.evaluate(() => document.activeElement.id === "c-name"));
+  await visitor.fill("#c-name", "Morgan Pike");
+  await visitor.fill("#c-email", "morgan@valleycu.test");
+  await visitor.fill("#c-org", "Valley Credit Union");
+  await visitor.click("#contact-form button[type=submit]");
+  check("…then asks for a topic", (await visitor.textContent("#contact-msg")) === "Pick what your message is about.");
+  await visitor.selectOption("#c-topic", "partnership");
+  await visitor.fill("#c-message", "We'd like to sponsor the internships section next spring.");
+  await shot(visitor, "15-contact");
+  await visitor.click("#contact-form button[type=submit]");
+  await visitor.waitForSelector("text=Message sent");
+  const contactMail = stack.outbox().findLast((m) => m.to === "administrator@bankjobz.com");
+  check("the message reaches administrator@bankjobz.com, ready to reply to",
+    contactMail && contactMail.replyTo === "morgan@valleycu.test" && contactMail.subject.includes("Partnerships and advertising: Morgan Pike, Valley Credit Union")
+    && contactMail.text.includes("sponsor the internships section"));
+  check("the visitor sees a confirmation with their address", (await visitor.textContent("#contact-form")).includes("We'll reply to morgan@valleycu.test"));
+
+  await emp.goto(BASE + "/#contact");
+  await emp.waitForSelector("#contact-form");
+  check("a signed-in employer starts on the employer topic", (await emp.inputValue("#c-topic")) === "employer");
+
+  await adm.reload(); // the console was opened earlier, before this message existed
+  await adm.waitForSelector("#admin-messages");
+  const inbox = await adm.textContent("#admin-messages");
+  check("admin console lists the message with a reply link", inbox.includes("Morgan Pike") && inbox.includes("Valley Credit Union")
+    && inbox.includes("Partnerships and advertising")
+    && (await adm.getAttribute('#admin-messages a[href^="mailto:morgan@valleycu.test"]', "href")) !== null);
+
+  const phoneContact = await newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
+  await phoneContact.goto(BASE + "/#contact");
+  await phoneContact.waitForSelector("#contact-form");
+  const contactOverflow = await phoneContact.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) > window.innerWidth + 1);
+  check("contact page fits a phone with no sideways scrolling", !contactOverflow);
+  await shot(phoneContact, "16-contact-phone");
+  const phoneHead = await phoneContact.evaluate(() => { const h = document.querySelector(".site-head"); return h.getBoundingClientRect().height; });
+  check("header nav with Contact still fits on a phone", phoneHead < 200, phoneHead);
+
   check("no JavaScript errors on any page", pageErrors.length === 0, pageErrors.join(" | "));
 } catch (err) {
   failed++;

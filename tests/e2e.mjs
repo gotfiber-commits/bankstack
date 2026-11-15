@@ -1411,6 +1411,74 @@ try {
   check("the talent pool closes when the employer's last posting ends", r.status === 403);
 
   // ================================================================
+  section("Contact us");
+  outbox().length = 0;
+  const contactMsg = { name: "Dana Reyes", email: "Dana@FirstShoals.test", organization: "First Shoals Bank", topic: "billing",
+    message: "Can we pay annually instead of monthly?\nThanks <b>team</b>" };
+  r = await call("POST", "/api/contact", { body: contactMsg, ip: "203.0.113.70" });
+  let mail = lastEmailTo("administrator@bankjobz.com");
+  check("contact form emails administrator@bankjobz.com with the sender as Reply-To",
+    r.status === 200 && r.data.ok && mail && mail.replyTo === "dana@firstshoals.test"
+    && mail.subject === "[BankJobz contact] Billing and my plan: Dana Reyes, First Shoals Bank"
+    && mail.text.includes("Can we pay annually instead of monthly?\nThanks <b>team</b>") && mail.text.includes("Organization: First Shoals Bank"), { r, mail });
+  check("contact email HTML escapes the message", mail && mail.html.includes("Thanks &lt;b&gt;team&lt;/b&gt;") && !mail.html.includes("<b>team</b>"));
+  check("nothing is emailed to the address typed in the form", !outbox().some((m) => m.to === "dana@firstshoals.test"));
+  let [savedMsg] = await sql`SELECT * FROM contact_messages ORDER BY id DESC LIMIT 1`;
+  check("contact message is saved", savedMsg && savedMsg.email === "dana@firstshoals.test" && savedMsg.topic === "billing"
+    && savedMsg.organization === "First Shoals Bank" && !savedMsg.net_tag.includes("203.0.113.70"), savedMsg);
+
+  for (const [label, body, want] of [
+    ["missing name", { ...contactMsg, name: "  " }, "Add your name."],
+    ["bad email", { ...contactMsg, email: "dana@" }, "Add an email address we can reply to."],
+    ["unknown topic", { ...contactMsg, topic: "hack" }, "Pick what your message is about."],
+    ["too-short message", { ...contactMsg, message: "hi" }, "Add a little more detail to your message."],
+  ]) {
+    r = await call("POST", "/api/contact", { body, ip: "203.0.113.71" });
+    check(`contact form rejects ${label}`, r.status === 400 && r.data.error === want, r);
+  }
+  r = await call("POST", "/api/contact", { body: "not json{", ip: "203.0.113.71" });
+  check("contact form rejects a non-JSON body", r.status === 400);
+  r = await call("GET", "/api/contact");
+  check("contact endpoint only takes POST", r.status === 405);
+
+  outbox().length = 0;
+  const msgsBefore = (await sql`SELECT COUNT(*)::int AS n FROM contact_messages`)[0].n;
+  r = await call("POST", "/api/contact", { body: { ...contactMsg, company_website: "http://spam.test" }, ip: "203.0.113.72" });
+  check("honeypot: a bot gets ok but nothing is saved or sent", r.status === 200 && r.data.ok && outbox().length === 0
+    && (await sql`SELECT COUNT(*)::int AS n FROM contact_messages`)[0].n === msgsBefore);
+
+  r = await call("POST", "/api/contact", { body: { ...contactMsg, name: "Line\r\nBcc: x@evil.test", message: "x".repeat(6000) }, ip: "203.0.113.73" });
+  [savedMsg] = await sql`SELECT * FROM contact_messages ORDER BY id DESC LIMIT 1`;
+  mail = lastEmailTo("administrator@bankjobz.com");
+  check("contact form strips line breaks from the name and caps the message at 5,000 characters",
+    r.status === 200 && savedMsg.name === "Line Bcc: x@evil.test" && savedMsg.message.length === 5000 && !/[\r\n]/.test(mail.subject), savedMsg.name);
+
+  // Five an hour per network...
+  for (let i = 0; i < 4; i++) await call("POST", "/api/contact", { body: { ...contactMsg, email: `n${i}@rate.test` }, ip: "203.0.113.74" });
+  r = await call("POST", "/api/contact", { body: { ...contactMsg, email: "n4@rate.test" }, ip: "203.0.113.74" });
+  check("contact form: 5th message from one network is accepted", r.status === 200, r);
+  r = await call("POST", "/api/contact", { body: { ...contactMsg, email: "n5@rate.test" }, ip: "203.0.113.74" });
+  check("contact form: 6th message in an hour from one network is refused", r.status === 429 && /administrator@bankjobz.com/.test(r.data.error), r);
+  // ...and per sender address, across networks.
+  for (let i = 0; i < 5; i++) await call("POST", "/api/contact", { body: { ...contactMsg, email: "same@rate.test" }, ip: `198.51.100.${10 + i}` });
+  r = await call("POST", "/api/contact", { body: { ...contactMsg, email: "SAME@rate.test" }, ip: "198.51.100.40" });
+  check("contact form: 6th message in an hour from one address is refused", r.status === 429, r);
+  await sql`UPDATE contact_messages SET created_at = now() - interval '2 hours' WHERE email = 'same@rate.test'`;
+  r = await call("POST", "/api/contact", { body: { ...contactMsg, email: "same@rate.test" }, ip: "198.51.100.41" });
+  check("contact form: the limit resets after an hour", r.status === 200, r);
+
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  check("admin console lists contact messages, newest first",
+    r.status === 200 && r.data.messages.length >= 10 && r.data.messages[0].email === "same@rate.test"
+    && r.data.messages.some((m) => m.organization === "First Shoals Bank") && !("net_tag" in r.data.messages[0]), r.data.messages?.[0]);
+  r = await call("GET", "/api/admin");
+  check("contact messages need the admin key", r.status === 401 || r.status === 403, r.status);
+
+  await sql`UPDATE contact_messages SET created_at = now() - interval '400 days' WHERE email = 'dana@firstshoals.test'`;
+  r = await pruneAuth();
+  check("maintenance deletes contact messages older than a year",
+    r.contact >= 1 && (await sql`SELECT COUNT(*)::int AS n FROM contact_messages WHERE email = 'dana@firstshoals.test'`)[0].n === 0, r);
+
   section("Institution directory (FDIC + NCUA)");
   r = await call("POST", "/api/admin/institutions/sync", { body: { source: "fdic", offset: 0 } });
   check("directory sync needs the admin key", r.status === 401);

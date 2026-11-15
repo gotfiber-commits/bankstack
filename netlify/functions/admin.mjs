@@ -64,9 +64,14 @@ export default async (req) => {
                COUNT(*) FILTER (WHERE institution_type = 'credit-union')::int AS credit_unions
         FROM institutions WHERE active`;
     } catch { /* directory tables not migrated yet */ }
+    let messages = [];
+    try {
+      messages = await sql`SELECT id, name, email, organization, topic, message, emailed, created_at
+        FROM contact_messages ORDER BY created_at DESC LIMIT 50`;
+    } catch { /* contact table not migrated yet */ }
     return json({ ...stats, ...counts, directory, mrr_cents: mrr, live_plans: plans.length,
       renewing_plans: plans.filter((e) => !e.plan_cancel_at_period_end).length,
-      billing: { plan: describePrice(price), error: priceError }, jobs, employers });
+      billing: { plan: describePrice(price), error: priceError }, jobs, employers, messages });
   }
 
   if (req.method !== "POST") return fail("Method not allowed", 405);
