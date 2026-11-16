@@ -759,3 +759,53 @@ h1, h2, h3 { letter-spacing: -0.01em; }
 .step-n { background: #0a2a5e; color: #fff; }
 .hero .cat-chip b { color: rgba(255, 255, 255, 0.7); }
 .hero .cat-chip[aria-pressed="true"] b { color: #c8102e; }
+
+/* Pay-transparency note under the salary fields */
+.paylaw { margin: 0.25rem 0 0; padding: 0.65rem 0.85rem; border-radius: var(--radius); font-size: 0.9rem; line-height: 1.5;
+  border-left: 4px solid var(--line); background: var(--surface); }
+.paylaw.warn { border-left-color: #b7791f; background: #fdf6e7; color: #4a3510; }
+.paylaw.ok { border-left-color: #2f7d4f; background: #eaf5ee; color: #173d27; }
+.paylaw-fine { display: block; margin-top: 0.2rem; font-size: 0.78rem; opacity: 0.75; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .paylaw.warn { background: #33270f; color: #f5deb0; } :root:not([data-theme="light"]) .paylaw.ok { background: #12301f; color: #bfe7cd; } }
+:root[data-theme="dark"] .paylaw.warn { background: #33270f; color: #f5deb0; }
+:root[data-theme="dark"] .paylaw.ok { background: #12301f; color: #bfe7cd; }
+
+/* Claim your listings */
+.claim-page { padding-block: 2rem 3rem; display: flex; flex-direction: column; gap: 1.25rem; }
+.claim-head h1 { font-size: clamp(1.8rem, 4vw, 2.6rem); font-weight: 800; letter-spacing: -0.02em; margin: 0.2rem 0 0.4rem; }
+.claim-head .lede { margin: 0; max-width: 62ch; color: var(--muted); }
+.claim-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 1.5rem; align-items: start; }
+@media (max-width: 860px) { .claim-grid { grid-template-columns: 1fr; } }
+.claim-perks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.7rem; }
+.claim-perks li { padding: 0.75rem 0.9rem; border-left: 4px solid var(--accent); background: var(--surface); border-radius: var(--radius); line-height: 1.45; }
+.claim-perks li:first-child { border-left-color: var(--red); }
+.claim-jobs { border: 0; padding: 0; margin: 0 0 1rem; display: flex; flex-direction: column; gap: 0.4rem; }
+.claim-jobs legend { font-weight: 700; margin-bottom: 0.5rem; }
+.claim-job { display: flex; gap: 0.6rem; align-items: flex-start; padding: 0.55rem 0.7rem; border: 1px solid var(--line); border-radius: var(--radius); cursor: pointer; }
+.claim-job input { margin-top: 0.25rem; }
+.claim-job span { display: flex; flex-direction: column; }
+.claim-job small { color: var(--muted); }
+.claim-instant { padding: 0.6rem 0.8rem; border-left: 4px solid #2f7d4f; background: #eaf5ee; color: #173d27; border-radius: var(--radius); }
+.claim-step { margin: 0 0 0.75rem; }
+.claim-strip { padding: 0.7rem 0.9rem; border-left: 4px solid var(--red); background: var(--surface); border-radius: var(--radius); margin: 0; }
+/* Billing choices and plan panel */
+.billing-pick { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 0.75rem; }
+.mode-opts.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.mode-opts.one { grid-template-columns: minmax(0, 1fr); }
+@media (max-width: 560px) { .mode-opts.two { grid-template-columns: 1fr; } }
+.save-tag { font-style: normal; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; background: var(--red); color: var(--red-ink); padding: 0.12rem 0.4rem; border-radius: 3px; margin-left: 0.3rem; vertical-align: 0.1em; }
+.checkout-line.trial { border-color: #2f7d4f; }
+.plan-how { font: 600 0.8rem var(--font-body); color: var(--muted); margin-left: 0.4rem; letter-spacing: 0; }
+.trial-note { margin: 0.4rem 0; padding: 0.6rem 0.8rem; border-left: 4px solid var(--red); background: var(--bg); border-radius: var(--radius); }
+.invoice-switch { margin-top: 0.75rem; }
+
+/* NMLS badge */
+.tag.nmls-ok { background: #e4f3ea; color: #1d5c37; }
+:root[data-theme="dark"] .tag.nmls-ok { background: #12301f; color: #bfe7cd; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .tag.nmls-ok { background: #12301f; color: #bfe7cd; } }
+.app-nmls { font-size: 0.88rem; display: flex; gap: 0.4rem; align-items: center; flex-wrap: wrap; }
+.t-nmls { align-self: center; }
+.claim-link { font-size: 0.8rem; overflow-wrap: anywhere; }
+.claim-grid > div { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
+:root[data-theme="dark"] .claim-instant { background: #12301f; color: #bfe7cd; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .claim-instant { background: #12301f; color: #bfe7cd; } }

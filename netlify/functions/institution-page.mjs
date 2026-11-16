@@ -63,6 +63,9 @@ ${noindex ? `<meta name="robots" content="noindex, follow">` : ""}
   .facts-list b { display: block; font-size: 1.15rem; }
   .facts-list span { color: var(--muted); font-size: 0.82rem; }
   .claim { margin-top: 2rem; padding: 1rem; border: 1px dashed var(--line); border-radius: 8px; color: var(--muted); font-size: 0.9rem; }
+  .claim-cta { border: 0; border-left: 5px solid var(--red); background: var(--surface); color: var(--fg); display: flex; flex-direction: column; align-items: flex-start; gap: 0.6rem; font-size: 1rem; box-shadow: 0 10px 30px -20px rgba(12, 27, 51, 0.4); }
+  .claim-cta .btn { text-decoration: none; background: var(--red); color: var(--red-ink); }
+  .claim-cta .sub-note { color: var(--muted); font-size: 0.85rem; }
   .crumbs { font-size: 0.85rem; margin-bottom: 1rem; }
   .dir .job-link { display: block; padding: 0.7rem 0; border-bottom: 1px solid var(--line); text-decoration: none; color: inherit; }
   .dir .job-link:hover .t { color: var(--accent); }
@@ -161,10 +164,15 @@ export default async (req, context) => {
         body: `<h1>We don't have a page for that institution</h1><p class="sub">It may have merged or changed names. <a href="/banks">Browse the directory</a>.</p>` });
     }
     const jobs = await sql`
-      SELECT id, title, location, category, salary_min, salary_max FROM jobs
+      SELECT id, title, location, category, salary_min, salary_max, (employer_id IS NULL) AS gathered FROM jobs
       WHERE status = 'open' AND expires_at > now()
         AND (institution_id = ${inst.id} OR lower(company) = lower(${inst.name}))
       ORDER BY (employer_id IS NOT NULL) DESC, posted_at DESC LIMIT 50`;
+    let claimed = false;
+    try { claimed = !!(await sql`SELECT 1 FROM institution_claims WHERE institution_id = ${inst.id} AND status = 'approved'`).length; }
+    catch { /* claims table not migrated yet */ }
+    const gathered = jobs.filter((j) => j.gathered).length;
+    const trial = Math.max(1, Math.min(90, Math.round(Number(process.env.CLAIM_TRIAL_DAYS)) || 30));
     const where = [inst.city, inst.state].filter(Boolean).join(", ");
     const facts = [
       inst.asset_thousands ? `<li><b>${assets(inst.asset_thousands)}</b><span>total assets</span></li>` : "",
@@ -181,7 +189,13 @@ export default async (req, context) => {
       <h2>${jobs.length ? `Open ${jobs.length === 1 ? "position" : "positions"} (${jobs.length})` : "Open positions"}</h2>
       ${jobs.length ? jobs.map(jobLink).join("")
         : `<p class="sub">No openings from ${esc(inst.name)} on ${BRAND} right now. <a href="/#home">Set a job alert</a> and we'll email you when banking roles${inst.state ? ` in ${esc(STATE_NAMES[inst.state] || inst.state)}` : ""} appear, or <a href="/#jobs">browse every open role</a>.</p>`}
-      <div class="claim"><b>Work for ${esc(inst.name)}?</b> Post up to 5 openings for $99/month and reach candidates who already know banking: <a href="/#post">post a job</a>. To claim or correct this page, email <a href="mailto:listings@bankjobz.com">listings@bankjobz.com</a>. Figures are from public ${inst.institution_type === "bank" ? "FDIC" : "NCUA"} data${inst.data_as_of ? ` (as of ${esc(inst.data_as_of)})` : ""}.</div>`;
+      ${claimed
+        ? `<div class="claim"><b>Work for ${esc(inst.name)}?</b> This page is managed by ${esc(inst.name)}. To correct it, email <a href="mailto:listings@bankjobz.com">listings@bankjobz.com</a>. Figures are from public ${inst.institution_type === "bank" ? "FDIC" : "NCUA"} data${inst.data_as_of ? ` (as of ${esc(inst.data_as_of)})` : ""}.</div>`
+        : `<div class="claim claim-cta"><b>Work for ${esc(inst.name)}?</b> ${gathered
+            ? `We list ${gathered} of your opening${gathered === 1 ? "" : "s"} from your careers site. Claim ${gathered === 1 ? "it" : "them"} to manage ${gathered === 1 ? "it" : "them"} from your own dashboard, free for ${trial} days, no card needed.`
+            : `Claim this page and get ${trial} days free when you post your first opening, no card needed.`}
+            <a class="btn" href="/#claim-${esc(inst.slug)}">Claim ${gathered ? (gathered === 1 ? "this listing" : "these listings") : "this page"}</a>
+            <span class="sub-note">Figures are from public ${inst.institution_type === "bank" ? "FDIC" : "NCUA"} data${inst.data_as_of ? ` (as of ${esc(inst.data_as_of)})` : ""}. To correct this page, email <a href="mailto:listings@bankjobz.com">listings@bankjobz.com</a>.</span></div>`}`;
     return page({
       title: `Jobs at ${inst.name}${where ? ` — ${where}` : ""} · ${BRAND}`,
       description: `${inst.name}: ${TYPE_LABEL[inst.institution_type].toLowerCase()}${where ? ` in ${where}` : ""}${inst.asset_thousands ? `, ${assets(inst.asset_thousands)} in assets` : ""}. See open jobs and get alerts for new banking roles.`,

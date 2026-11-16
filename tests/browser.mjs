@@ -530,7 +530,7 @@ try {
   await adm.click("text=Open console");
   await adm.waitForSelector(".admin-figures");
   check("admin figures show $159.99 MRR from one plan with 6 postings", (await adm.textContent(".admin-figures strong")) === "$159.99"
-    && (await adm.textContent(".admin-figures")).includes("1hiring plans live"));
+    && (await adm.textContent(".admin-figures")).includes("1paying plans"));
   check("billing setup shows the plan Stripe is charging", (await adm.textContent(".billing-setup")).includes("+$15")
     && (await adm.inputValue("#bill-extra")) === "15.00");
   const firstSourced = adm.locator('[data-admin="close"][data-direct="false"]').first();
@@ -667,6 +667,183 @@ try {
     privacyText.includes("Who we are") && privacyText.includes("veteran-owned small business") && privacyText.includes("don't share your information with any veterans' organization"));
   await visitor.goto(BASE + "/terms.html");
   check("terms page footer carries the veteran-owned line", (await visitor.locator(".site-foot .vet-line").count()) === 1);
+
+  // ---------- helpers for the sections below: accounts made through the real API ----------
+  const apiJson = async (method, path, body, token) => {
+    const res = await fetch(BASE + path, { method, headers: { "content-type": "application/json", ...(token ? { authorization: "Bearer " + token } : {}) },
+      body: body ? JSON.stringify(body) : undefined });
+    return { status: res.status, data: await res.json().catch(() => null) };
+  };
+  const employerToken = async (email, company) => {
+    const r = await apiJson("POST", "/api/auth/signup", { contact_name: "Pat Lee", contact_title: "HR Director", company, email, password: "Shoals-Teller-Window-42", institution_type: "bank" });
+    const code = [...stack.outbox()].reverse().find((m) => m.to === email.toLowerCase())?.subject.match(/(\d{6})$/)?.[1];
+    const v = await apiJson("POST", "/api/auth/verify", { challenge: r.data?.challenge, code });
+    if (!v.data?.token) throw new Error(`sign-up failed for ${email}: ${JSON.stringify(r.data)} ${JSON.stringify(v.data)}`);
+    return v.data.token;
+  };
+  const pageAs = async (storageKey, token, opts) => {
+    const pg = await newPage(opts);
+    await pg.addInitScript(([k, v]) => { try { localStorage.setItem(k, v); } catch { /* none */ } }, [storageKey, token]);
+    return pg;
+  };
+
+  section("Pay-transparency check on the post form");
+  const ptKey = await employerToken("pat@paycheck.test", "Paycheck Savings Bank");
+  const pt = await pageAs("bankstack.key", ptKey);
+  await pt.goto(BASE + "/#post");
+  await pt.waitForSelector("#post-form");
+  check("no note for a state without a pay-range law", await pt.locator("#p-paylaw").isHidden());
+  const settle = () => pt.waitForTimeout(80); // the note updates just after each change
+  await pt.fill("#p-location", "Denver, CO");
+  await settle();
+  const warnText = await pt.textContent("#p-paylaw");
+  check("Colorado location with no pay: a warning naming the law and threshold",
+    (await pt.getAttribute("#p-paylaw", "class")).includes("warn") && warnText.includes("Colorado requires a pay range") && warnText.includes("employers of any size")
+    && warnText.includes("not legal advice"), warnText);
+  await pt.fill("#p-min", "52,000");
+  await pt.fill("#p-max", "61,000");
+  await settle();
+  check("with a range it turns to a confirmation, plus Colorado's benefits note",
+    (await pt.textContent("#p-paylaw")).includes("Pay range included") && (await pt.textContent("#p-paylaw")).includes("description of benefits"));
+  await pt.check('input[name="benefit"][value="medical"]');
+  await settle();
+  check("ticking a benefit satisfies the benefits note",
+    (await pt.getAttribute("#p-paylaw", "class")).includes("ok") && !(await pt.textContent("#p-paylaw")).includes("description of benefits"));
+  await pt.fill("#p-min", "");
+  await pt.fill("#p-location", "Anywhere in the US");
+  await pt.click('#p-mode label:has(#p-mode-remote)');
+  await settle();
+  check("remote with no pay: reminds that CA, CO, NY and WA laws can reach remote roles",
+    (await pt.textContent("#p-paylaw")).includes("Remote roles") && (await pt.textContent("#p-paylaw")).includes("Washington"));
+  await pt.fill("#p-location", "Denver, CO");
+  await pt.click('#p-mode label:has(#p-mode-onsite)');
+  await shot(pt, "17-pay-transparency");
+
+  section("Billing choices: yearly and pay by invoice");
+  check("no plan yet: Monthly / Yearly and Card / Invoice choices",
+    await pt.locator('input[name="billing_interval"][value="year"]').count() === 1 && await pt.locator('input[name="pay_by"][value="invoice"]').count() === 1
+    && (await pt.textContent(".billing-pick")).includes("2 months free") && await pt.locator(".invoice-fields").isHidden());
+  check("monthly card is the default: $99 due today", (await pt.textContent("#checkout-line")).includes("due today, then monthly") && (await pt.textContent("#post-submit")).trim() === "Continue to payment");
+  await pt.click('label.mode-opt:has(input[name="billing_interval"][value="year"])');
+  check("yearly: $990", (await pt.textContent("#checkout-line")).includes("$990"));
+  await pt.click('label.mode-opt:has(input[name="pay_by"][value="invoice"])');
+  check("invoice: billing email and PO fields appear; the button says it publishes and invoices",
+    await pt.locator(".invoice-fields").isVisible() && (await pt.textContent("#post-submit")).trim() === "Publish and send invoice"
+    && (await pt.textContent("#checkout-line")).includes("pat@paycheck.test") && (await pt.textContent("#checkout-line")).includes("due in 30 days"));
+  await pt.fill("#p-billing-email", "ap@paycheck.test");
+  await pt.fill("#p-po", "PO-881");
+  check("the line follows the billing email as it's typed", (await pt.textContent("#checkout-line")).includes("ap@paycheck.test"));
+  await pt.fill("#p-title", "Teller");
+  await pt.fill("#p-min", "38,000");
+  await pt.fill("#p-max", "44,000");
+  await pt.fill("#p-summary", "Serve members at our downtown Denver branch.");
+  await shot(pt, "18-billing-choices");
+  const ptSessions = stack.fakeStripe.sessions.size;
+  await pt.click("#post-submit");
+  await pt.waitForSelector(".plan-panel");
+  check("publishing by invoice goes straight to the dashboard, live, with no Stripe Checkout",
+    stack.fakeStripe.sessions.size === ptSessions && (await pt.textContent("body")).includes("Stripe will email your invoice"));
+  const ptPlan = await pt.textContent(".plan-panel");
+  check("plan panel: yearly, paid by invoice, priced per year", ptPlan.includes("Yearly · paid by invoice") && ptPlan.includes("$990") && ptPlan.includes("/yr"), ptPlan.slice(0, 300));
+  check("…and offers card billing instead (no yearly switch: it's already yearly)",
+    await pt.locator('[data-billing="card"]').count() === 1 && await pt.locator('[data-billing="year"]').count() === 0);
+
+  // A monthly card plan switches to yearly from the dashboard.
+  const swKey = await employerToken("pat@switchui.test", "Switch UI Bank");
+  const sw = await pageAs("bankstack.key", swKey);
+  await sw.goto(BASE + "/#post");
+  await sw.waitForSelector("#post-form");
+  await sw.fill("#p-title", "Loan Processor");
+  await sw.fill("#p-location", "Florence, AL");
+  await sw.fill("#p-summary", "Process consumer and mortgage loans from application to close.");
+  await sw.click("#post-submit");
+  await sw.waitForURL(/checkout\.stripe\.test|#welcome|#dashboard/);
+  await sw.goto(BASE + "/#dashboard");
+  await sw.waitForSelector(".dash-tabs, .kpis");
+  await sw.click('text=Postings');
+  await sw.waitForSelector('[data-billing="year"]');
+  await sw.click('[data-billing="year"]');
+  check("switching to yearly asks for a second click, saying what's billed", (await sw.textContent("body")).includes("Click again to confirm"));
+  await sw.click('[data-billing="year"]');
+  await sw.waitForSelector(".plan-how:has-text('Yearly')");
+  check("…then the plan is yearly", (await sw.textContent(".plan-panel")).includes("Yearly · paid by card"));
+  await sw.click('[data-billing="invoice"]');
+  check("Pay by invoice instead opens the billing email form", await sw.locator(".invoice-switch").isVisible());
+  await sw.fill("#sw-billing-email", "ap@switchui.test");
+  await sw.click('.invoice-switch button[type=submit]');
+  await sw.waitForSelector(".plan-how:has-text('invoice')");
+  check("…and switches to invoice billing", (await sw.textContent(".plan-panel")).includes("Yearly · paid by invoice"));
+
+  section("Claim your listings");
+  const [claimInst] = await stack.sql`INSERT INTO institutions (slug, name, normalized_name, institution_type, regulator_id, city, state, website)
+    VALUES ('claim-test-bank-austin-tx', 'Claim Test Bank', 'claim test bank', 'bank', '9901', 'Austin', 'TX', 'https://www.claimbank.test') RETURNING *`;
+  const claimJobs = [];
+  for (const [title, i] of [["Personal Banker", 0], ["Credit Analyst", 1]]) {
+    const [j] = await stack.sql`INSERT INTO jobs (title, company, institution_type, location, category, summary, apply_url, source_name, source_url, institution_id, salary_min, salary_max, expires_at)
+      VALUES (${title}, 'Claim Test Bank', 'bank', 'Austin, TX', 'branch-retail', ${title + " at Claim Test Bank."}, ${"https://claimbank.test/jobs/" + i}, 'Claim Test careers',
+              ${"https://claimbank.test/jobs/" + i}, ${claimInst.id}, 50000, 60000, now() + interval '30 days') RETURNING id`;
+    claimJobs.push(j.id);
+  }
+  const anon = await newPage();
+  await anon.goto(BASE + "/#job-" + claimJobs[0]);
+  await anon.waitForSelector(".claim-strip");
+  check("a gathered listing invites its bank to claim it", (await anon.textContent(".claim-strip")).includes("Hiring at Claim Test Bank?"));
+  await anon.click(".claim-strip a");
+  await anon.waitForSelector(".claim-page");
+  check("claim page, signed out: the listings, the free trial, and a sign-up prefilled with the bank's name",
+    (await anon.textContent(".claim-head h1")) === "Claim Test Bank" && (await anon.textContent(".claim-page")).includes("Free for 30 days")
+    && await anon.locator(".claim-job").count() === 2 && (await anon.textContent(".claim-step")).includes("claimbank.test"));
+  await anon.click('[data-auth-tab="signup"]').catch(() => {});
+  const prefill = await anon.inputValue("#su-company").catch(() => "");
+  check("the sign-up form is prefilled with the institution", prefill === "Claim Test Bank", prefill);
+  await shot(anon, "19-claim-signed-out");
+  const ctKey = await employerToken("pat@claimbank.test", "Claim Test Bank");
+  const ct = await pageAs("bankstack.key", ctKey);
+  await ct.goto(BASE + "/#claim-claim-test-bank-austin-tx");
+  await ct.waitForSelector("#claim-form");
+  check("signed in with a work email on the bank's domain: approved instantly", (await ct.textContent(".claim-instant")).includes("claimbank.test"));
+  await ct.uncheck(`input[name="job_ids"][value="${claimJobs[1]}"]`);
+  check("the button counts what's picked", (await ct.textContent("#claim-form button[type=submit]")).trim() === "Claim 1 listing");
+  await ct.check(`input[name="job_ids"][value="${claimJobs[1]}"]`);
+  await shot(ct, "20-claim-signed-in");
+  await ct.click("#claim-form button[type=submit]");
+  await ct.waitForSelector(".plan-panel");
+  const ctBody = await ct.textContent("body");
+  check("claimed: both listings are theirs and live, on a free trial", ctBody.includes("2 listings are now yours and live") && ctBody.includes("Free until"));
+  check("plan panel shows the trial and how to keep going", (await ct.textContent(".plan-panel")).includes("Free trial until") && (await ct.textContent(".plan-panel")).includes("add a card"));
+  check("the postings list shows them", (await ct.textContent("body")).includes("Personal Banker") && (await ct.textContent("body")).includes("Credit Analyst"));
+  await shot(ct, "21-claimed-dashboard");
+
+  section("NMLS-verified candidates");
+  stack.outbox().length = 0;
+  await apiJson("POST", "/api/candidate-auth/request", { email: "nmls.nora@example.test", name: "Nora Lane" });
+  const nl = [...stack.outbox()].reverse().find((m) => m.to === "nmls.nora@example.test")?.text.match(/clogin=([a-f0-9]{48})/)?.[1];
+  const nk = (await apiJson("POST", "/api/candidate-auth/verify", { token: nl })).data.token;
+  const nora = await pageAs("bankjobz.ck", nk);
+  await nora.goto(BASE + "/#profile");
+  await nora.waitForSelector("#profile-form");
+  check("profile has an NMLS ID field explaining the badge", (await nora.textContent(".nmls-field")).includes("badge"));
+  await nora.fill("#pr-name", "Nora Lane");
+  await nora.fill("#pr-nmls", "12x");
+  await nora.click("#profile-form button[type=submit]");
+  check("a malformed NMLS ID is caught in the form", (await nora.textContent("#pr-msg")).includes("up to 10 digits"));
+  await nora.fill("#pr-nmls", "1234567");
+  await nora.click("#profile-form button[type=submit]");
+  await nora.waitForURL(/#matches/);
+  await nora.goto(BASE + "/#profile");
+  await nora.waitForSelector("#pr-nmls-status");
+  check("after saving: being checked", (await nora.textContent("#pr-nmls-status")).includes("Being checked"));
+  await adm.reload();
+  await adm.waitForSelector("#admin-nmls");
+  check("admin queue links straight to the NMLS Consumer Access record",
+    (await adm.getAttribute('#admin-nmls a[href*="nmlsconsumeraccess.org"]', "href")) === "https://www.nmlsconsumeraccess.org/EntityDetails.aspx/INDIVIDUAL/1234567");
+  check("admin sees claims and the pitch list", await adm.locator("#admin-claims").count() === 1 && await adm.locator("#admin-claimable").count() === 1);
+  await shot(adm, "22-admin-queues");
+  await adm.click('#admin-nmls [data-decide="verify"]');
+  await adm.waitForSelector("#admin-nmls >> text=Nothing waiting");
+  await nora.reload();
+  await nora.waitForSelector("#pr-nmls-status .nmls-ok");
+  check("the candidate's profile shows NMLS verified", (await nora.textContent("#pr-nmls-status")).includes("NMLS verified"));
 
   check("no JavaScript errors on any page", pageErrors.length === 0, pageErrors.join(" | "));
 } catch (err) {

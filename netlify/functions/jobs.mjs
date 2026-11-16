@@ -6,7 +6,8 @@ import { aiEnabled } from "../lib/ai.mjs";
 
 const PUBLIC_FIELDS = `id, title, company, institution_type, location, work_mode, employment_type, category,
   salary_min, salary_max, summary, description, apply_url, source_name, source_url, core_systems, licenses,
-  is_featured, posted_at, entry_level, (employer_id IS NOT NULL) AS direct`;
+  is_featured, posted_at, entry_level, (employer_id IS NOT NULL) AS direct,
+  CASE WHEN employer_id IS NULL THEN (SELECT i.slug FROM institutions i WHERE i.id = jobs.institution_id AND i.active) END AS institution_slug`;
 
 export default async (req, context) => {
   if (req.method !== "GET") return fail("Method not allowed", 405);

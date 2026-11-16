@@ -8,6 +8,8 @@
 //                                               (may return { url } for Checkout, or { needs_confirm, … })
 // POST /api/employer/jobs/:id/close           → take a posting down; the plan's next bill drops to match
 // POST /api/employer/plan/cancel | resume     → end the plan at the end of this month / keep it
+// POST /api/employer/plan/billing             → { interval?: "year", collection?: "invoice" | "card",
+//                                                 billing_email?, po_number? } switch to yearly / invoice / card
 // POST /api/employer/applications/:id/status  → { status } new | reviewing | interview | offer | hired | rejected
 // GET  /api/employer/applications/:id/resume  → download the uploaded résumé
 // POST /api/employer/billing                  → Stripe billing portal (cards, invoices)
@@ -23,7 +25,8 @@ import {
   emailTag, passwordKeys, reserveAttempt, attemptPassed, clearAttempts,
 } from "../lib/auth.mjs";
 import QRCode from "qrcode";
-import { planSummary, publishPostings, closePostings, setPlanCancel, createPlanCheckout, BillingError } from "../lib/billing.mjs";
+import { planSummary, publishPostings, closePostings, setPlanCancel, setPlanBilling, BillingError } from "../lib/billing.mjs";
+import { startPlanForPosting } from "../lib/claims.mjs";
 
 async function notifySecurity(to, what) {
   await sendEmail({
@@ -67,8 +70,9 @@ export default async (req) => {
     const applications = await sql`
       SELECT a.id, a.job_id, j.title AS job_title, a.name, a.email, a.phone, a.linkedin_url, a.resume_url,
              a.resume_name, a.resume_size, (a.resume_key IS NOT NULL) AS has_resume, a.cover_note, a.status,
-             a.notes, a.rating, a.created_at
-      FROM applications a JOIN jobs j ON j.id = a.job_id
+             a.notes, a.rating, a.created_at,
+             c.nmls_id, COALESCE(c.nmls_status, 'none') AS nmls_status, c.nmls_checked_at
+      FROM applications a JOIN jobs j ON j.id = a.job_id LEFT JOIN candidates c ON c.id = a.candidate_id
       WHERE j.employer_id = ${employer.id}
       ORDER BY a.created_at DESC LIMIT 1000`;
     const open = jobs.filter((j) => j.status === "open");
@@ -84,6 +88,12 @@ export default async (req) => {
       if (age >= 7 && j.applications === 0) return [{ job_id: j.id, title: j.title, reason: "quiet", text: `${Math.floor(age)} days live, no applicants yet — try adding pay, or sharpening the summary.` }];
       return [];
     });
+    if (plan.trialing && !plan.cancel_at_period_end) {
+      const end = new Date(plan.trial_end);
+      const days = Math.max(0, Math.ceil((end.getTime() - Date.now()) / dayMs));
+      attention.unshift({ job_id: null, title: "Free trial", reason: "trial",
+        text: `Your free trial ends ${end.toLocaleDateString("en-US", { month: "short", day: "numeric" })} (${days} day${days === 1 ? "" : "s"}). To keep your postings live after that, add a card under Cards & invoices or switch to invoice billing in Postings.` });
+    }
     if (plan.live && plan.cancel_at_period_end) {
       attention.unshift({ job_id: null, title: "Your plan", reason: "ending",
         text: `Set to end ${new Date(plan.paid_through).toLocaleDateString("en-US", { month: "short", day: "numeric" })}, and your postings come down with it. Keep your plan if you're still hiring.` });
@@ -94,6 +104,8 @@ export default async (req) => {
         company: employer.company, email: employer.email, institution_type: employer.institution_type,
         contact_name: employer.contact_name, contact_title: employer.contact_title, phone: employer.phone,
         member_since: employer.created_at, has_billing: !!employer.stripe_customer_id,
+        institution: employer.institution_id
+          ? (await sql`SELECT name, slug FROM institutions WHERE id = ${employer.institution_id}`)[0] || null : null,
         mfa_method: employer.mfa_method === "totp" && employer.totp_secret ? "totp" : "email",
       },
       stats: {
@@ -239,8 +251,9 @@ export default async (req) => {
     const jobId = /^\d+$/.test(p.get("job_id") || "") ? p.get("job_id") : null;
     const status = APPLICATION_STATUSES.includes(p.get("status")) ? p.get("status") : null;
     const rows = await sql`
-      SELECT a.created_at, j.title AS job, a.name, a.email, a.phone, a.linkedin_url, a.status, a.rating, a.notes, a.cover_note
-      FROM applications a JOIN jobs j ON j.id = a.job_id
+      SELECT a.created_at, j.title AS job, a.name, a.email, a.phone, a.linkedin_url, a.status, a.rating, a.notes, a.cover_note,
+             CASE WHEN c.nmls_id IS NULL THEN NULL WHEN c.nmls_status = 'verified' THEN c.nmls_id || ' (verified)' ELSE c.nmls_id || ' (not yet verified)' END AS nmls
+      FROM applications a JOIN jobs j ON j.id = a.job_id LEFT JOIN candidates c ON c.id = a.candidate_id
       WHERE j.employer_id = ${employer.id}
         AND (${jobId}::bigint IS NULL OR a.job_id = ${jobId}::bigint)
         AND (${status}::text IS NULL OR a.status = ${status}::text)
@@ -250,8 +263,8 @@ export default async (req) => {
       if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // stop spreadsheet formula injection
       return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
     };
-    const header = ["Applied", "Job", "Name", "Email", "Phone", "LinkedIn", "Stage", "Rating", "Your notes", "Cover note"];
-    const body = rows.map((r) => [r.created_at, r.job, r.name, r.email, r.phone, r.linkedin_url, r.status, r.rating, r.notes, r.cover_note]
+    const header = ["Applied", "Job", "Name", "Email", "Phone", "LinkedIn", "NMLS ID", "Stage", "Rating", "Your notes", "Cover note"];
+    const body = rows.map((r) => [r.created_at, r.job, r.name, r.email, r.phone, r.linkedin_url, r.nmls, r.status, r.rating, r.notes, r.cover_note]
       .map(cell).join(",")).join("\r\n");
     return new Response("﻿" + header.join(",") + "\r\n" + body + (body ? "\r\n" : ""), {
       headers: {
@@ -267,6 +280,22 @@ export default async (req) => {
   if (planMatch && req.method === "POST") {
     try {
       await setPlanCancel(employer.id, planMatch[1] === "cancel");
+      return json({ ok: true, plan: await planSummary(sql, (await sql`SELECT * FROM employers WHERE id = ${employer.id}`)[0]) });
+    } catch (err) { return fail(err.message, err instanceof BillingError ? err.status : 502); }
+  }
+
+  if (path === "/api/employer/plan/billing" && req.method === "POST") {
+    let b = {};
+    try { b = await req.json(); } catch { return fail("Send JSON."); }
+    const billingEmail = String(b.billing_email || "").trim().toLowerCase();
+    if (billingEmail && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(billingEmail) || billingEmail.length > 200)) return fail("Enter a valid email for invoices.");
+    try {
+      await setPlanBilling(employer.id, {
+        interval: b.interval === "year" ? "year" : b.interval === "month" ? "month" : null,
+        collection: b.collection === "invoice" ? "invoice" : b.collection === "card" ? "card" : null,
+        billingEmail: billingEmail || null,
+        poNumber: b.po_number == null ? null : String(b.po_number).replace(/[\r\n]+/g, " ").trim().slice(0, 40),
+      });
       return json({ ok: true, plan: await planSummary(sql, (await sql`SELECT * FROM employers WHERE id = ${employer.id}`)[0]) });
     } catch (err) { return fail(err.message, err instanceof BillingError ? err.status : 502); }
   }
@@ -295,7 +324,8 @@ export default async (req) => {
       const p = new URL(req.url).searchParams;
       const rows = await sql`
         SELECT id, location, work_mode_pref, categories, core_systems, licenses, summary,
-               blocked_employers, (resume_key IS NOT NULL) AS has_resume, created_at
+               blocked_employers, (resume_key IS NOT NULL) AS has_resume, created_at,
+               (nmls_status = 'verified' AND nmls_id IS NOT NULL) AS nmls_verified
         FROM candidates
         WHERE pool_visible AND (resume_key IS NOT NULL OR summary IS NOT NULL OR cardinality(categories) > 0)
         ORDER BY created_at DESC LIMIT 500`;
@@ -310,11 +340,14 @@ export default async (req) => {
         .filter((c) => !state || new RegExp(`\\b${state}\\b`).test(c.location || ""))
         .filter((c) => !CORE_SYSTEMS[core] || (c.core_systems || []).includes(core))
         .filter((c) => !LICENSES[lic] || (c.licenses || []).includes(lic))
+        .filter((c) => p.get("nmls") !== "verified" || c.nmls_verified)
         .map((c) => ({
           // Anonymous on purpose: no name, email, phone, LinkedIn or résumé here.
           id: c.id, location: c.location, work_mode_pref: c.work_mode_pref,
           categories: c.categories || [], core_systems: c.core_systems || [], licenses: c.licenses || [],
           summary: c.summary, has_resume: c.has_resume, member_since: c.created_at,
+          // The badge only: the NMLS ID itself would identify them, so it's shared once they apply.
+          nmls_verified: !!c.nmls_verified,
           invited_job_ids: byCand[c.id] || [],
         }));
       return json({ candidates: out, jobs: openJobs });
@@ -442,9 +475,13 @@ export default async (req) => {
       if (job.status === "open") return fail("This posting is already live.");
       if (job.status === "closed" && job.closed_by === "admin") return fail("This posting was taken down by BankJobz and can't be reopened.");
       const r = await publishPostings(employer.id, [job.id], { confirm: b.confirm === true });
-      if (r.needs_checkout) return json({ url: await createPlanCheckout(employer, job.id) });
+      if (r.needs_checkout) {
+        const started = await startPlanForPosting(employer, job.id, { interval: b.billing_interval, payBy: b.pay_by, billingEmail: b.billing_email, poNumber: b.po_number });
+        if (started.url) return json({ url: started.url });
+        return json({ ok: true, live: true, ...started });
+      }
       if (r.needs_confirm) return json({ ...r, job_id: job.id });
-      return json({ ok: true, live: true, monthly_cents: r.monthly_cents, upgraded: r.upgraded });
+      return json({ ok: true, live: true, monthly_cents: r.monthly_cents, upgraded: r.upgraded, interval: r.interval });
     }
     if (action === "close" || action === "cancel") {
       if (job.status === "closed") return fail("This posting is already closed.");

@@ -35,7 +35,8 @@ export default async (req) => {
           const plan = await planSummary(sql, emp);
           const base = siteUrl();
           const t = plan.tiers;
-          const terms = t ? `Your plan is ${money(t.base_cents)}/month for up to ${t.base_limit} active postings and ${money(t.plus_cents)}/month for up to ${t.plus_limit}${t.extra_cents ? `, plus ${money(t.extra_cents)} for each posting over ${t.plus_limit}` : ""}. It renews monthly until you cancel it from your dashboard.` : "It renews monthly until you cancel it from your dashboard.";
+          const per = plan.interval === "year" ? "year" : "month";
+          const terms = t ? `Your plan is ${money(t.base_cents)}/${per} for up to ${t.base_limit} active postings and ${money(t.plus_cents)}/${per} for up to ${t.plus_limit}${t.extra_cents ? `, plus ${money(t.extra_cents)} for each posting over ${t.plus_limit}` : ""}. It renews ${per === "year" ? "yearly" : "monthly"} until you cancel it from your dashboard.` : "It renews until you cancel it from your dashboard.";
           await sendEmail({
             to: emp.email,
             subject: `Your posting is live: ${row.title}`,

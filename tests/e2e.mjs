@@ -1529,6 +1529,325 @@ try {
   r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
   check("admin console shows directory counts",
     r.data.directory.banks === FAKE_BANKS.length && r.data.directory.credit_unions === FAKE_CUS.length, r.data.directory);
+
+  // ================================================================
+  section("Yearly plans and pay-by-invoice");
+  const { remindTrials } = await import("../netlify/lib/billing.mjs");
+  const signedUp = async (email, company, extra = {}) => {
+    const out = await signUp({ contact_name: "Pat Lee", contact_title: "HR Director", company, email, institution_type: "bank", ...extra });
+    if (!out.key) throw new Error(`sign-up failed for ${email}: ${JSON.stringify(out.res.data)}`);
+    return out.key;
+  };
+  const empRow = async (email) => (await sql`SELECT * FROM employers WHERE email = ${email}`)[0];
+  r = await call("GET", "/api/plan");
+  check("public plan includes the yearly price: ten months' cost, two months free",
+    r.data.yearly && r.data.yearly.interval === "year" && r.data.yearly.base_cents === 99000 && r.data.yearly.plus_cents === 159990
+    && r.data.yearly.extra_cents === 15000 && r.data.interval === "month", r.data.yearly);
+
+  const keyInv = await signedUp("pat@invoicebank.test", "Invoice Savings Bank");
+  const sessionsBefore = fakeStripe.sessions.size;
+  r = await call("POST", "/api/checkout", { token: keyInv, body: { ...jobFields, title: "Branch Manager", pay_by: "invoice", billing_interval: "year", billing_email: "nope@" } });
+  check("invoice billing needs a valid billing email; the posting stays saved, unpublished",
+    r.status === 400 && /email/i.test(r.data.error) && (await sql`SELECT status FROM jobs WHERE title = 'Branch Manager' AND company = 'Invoice Savings Bank'`)[0]?.status === "pending", r.data);
+  outbox().length = 0;
+  r = await call("POST", "/api/checkout", { token: keyInv, body: { ...jobFields, title: "Universal Banker", pay_by: "invoice", billing_interval: "year",
+    billing_email: "AP@InvoiceBank.test", po_number: "PO-2026-77\nx" } });
+  let invEmp = await empRow("pat@invoicebank.test");
+  let invSub = fakeStripe.subs.get(invEmp.plan_subscription_id);
+  check("pay by invoice: the posting goes live at once, with no Checkout", r.status === 200 && r.data.live === true && r.data.invoice === true
+    && fakeStripe.sessions.size === sessionsBefore && (await sql`SELECT status FROM jobs WHERE id = ${r.data.job_id}`)[0].status === "open", r.data);
+  check("…on a yearly, invoice-billed Stripe subscription due in 30 days",
+    invSub?.collection_method === "send_invoice" && invSub.days_until_due === 30 && invSub.items.data[0].price.recurring.interval === "year"
+    && invEmp.plan_interval === "year" && invEmp.plan_collection === "send_invoice" && invEmp.plan_status === "active", { invSub, emp: { i: invEmp.plan_interval, c: invEmp.plan_collection } });
+  const invCustomer = fakeStripe.customers.get(invEmp.stripe_customer_id);
+  check("invoices go to the billing email with the PO number on them",
+    invCustomer?.email === "ap@invoicebank.test" && invCustomer.invoice_settings.custom_fields?.[0]?.name === "PO number"
+    && invCustomer.invoice_settings.custom_fields[0].value === "PO-2026-77 x", invCustomer);
+  check("Stripe invoices the first year: $990", invoicesFor(invSub.id).some((i) => i.reason === "subscription_create" && i.amount === 99000 && i.collection === "send_invoice"));
+  let pmail = lastEmailTo("pat@invoicebank.test");
+  check("the employer is told the posting is live and where the invoice goes",
+    pmail && /live/.test(pmail.subject) && pmail.text.includes("ap@invoicebank.test") && pmail.text.includes("PO-2026-77") && pmail.text.includes("30 days") && /ACH/.test(pmail.text), pmail?.text);
+  r = await call("GET", "/api/employer", { token: keyInv });
+  check("dashboard plan: yearly, invoice, priced per year",
+    r.data.plan.live && r.data.plan.interval === "year" && r.data.plan.collection === "invoice" && r.data.plan.tiers.interval === "year"
+    && r.data.plan.this_month_cents === 99000 && r.data.plan.next_bill_cents === 99000, r.data.plan);
+  // Publish the saved Branch Manager too, then fill up to 5 and go to a 6th: an invoiced upgrade.
+  const bm = (await sql`SELECT id FROM jobs WHERE title = 'Branch Manager' AND company = 'Invoice Savings Bank'`)[0].id;
+  r = await call("POST", `/api/employer/jobs/${bm}/publish`, { token: keyInv, body: {} });
+  check("a saved posting publishes under the invoice plan at no extra charge", r.status === 200 && r.data.live === true && r.data.interval === "year", r.data);
+  for (let i = 3; i <= 5; i++) await call("POST", "/api/checkout", { token: keyInv, body: { ...jobFields, title: `Teller ${i}` } });
+  r = await call("POST", "/api/checkout", { token: keyInv, body: { ...jobFields, title: "Teller 6" } });
+  check("the 6th posting on a yearly invoice plan asks to confirm the larger yearly price",
+    r.data.needs_confirm && r.data.count === 6 && r.data.from_cents === 99000 && r.data.to_cents === 159990 && r.data.interval === "year" && r.data.invoice === true, r.data);
+  const updBefore = fakeStripe.updates.length;
+  r = await call("POST", `/api/employer/jobs/${r.data.job_id}/publish`, { token: keyInv, body: { confirm: true } });
+  const upd = fakeStripe.updates.slice(updBefore).find((u) => u.proration_behavior === "always_invoice");
+  check("…and the prorated difference is invoiced, not charged to a card",
+    r.status === 200 && r.data.upgraded === true && upd && !upd.payment_behavior
+    && invoicesFor(invSub.id).some((i) => i.reason === "subscription_update" && i.amount > 0 && i.collection === "send_invoice"), { r: r.data, upd });
+  r = await call("POST", "/api/employer/plan/billing", { token: keyInv, body: { interval: "month" } });
+  check("a yearly plan can't switch to monthly mid-term", r.status === 400 && /renews/.test(r.data.error), r.data);
+  // The invoice goes past due: postings come down.
+  await fakeStripeCall(`/test/subscriptions/${invSub.id}`, { status: "past_due" });
+  await sendWebhook("customer.subscription.updated", fakeStripe.subs.get(invSub.id));
+  invEmp = await empRow("pat@invoicebank.test");
+  const invOpen = (await sql`SELECT COUNT(*)::int n FROM jobs WHERE employer_id = ${invEmp.id} AND status = 'open'`)[0].n;
+  check("an invoice past its due date takes the postings down", invOpen === 0 && invEmp.plan_status === "past_due", { invOpen, status: invEmp.plan_status });
+  await fakeStripeCall(`/test/subscriptions/${invSub.id}`, { status: "active" });
+  await sendWebhook("customer.subscription.updated", fakeStripe.subs.get(invSub.id));
+  r = await call("GET", "/api/employer", { token: keyInv });
+  check("once it's paid the plan is live again (postings reopen from the dashboard)", r.data.plan.live === true, r.data.plan);
+
+  // Card, monthly → yearly, → invoice → card.
+  const keySw = await signedUp("pat@switchbank.test", "Switch Federal Savings");
+  r = await postJob(keySw, { ...jobFields, title: "Loan Processor" });
+  let sw = await empRow("pat@switchbank.test");
+  check("a card plan starts monthly through Checkout", sw.plan_interval === "month" && sw.plan_collection === "charge_automatically" && sw.plan_status === "active", sw.plan_interval);
+  await fakeStripeCall(`/test/customers/${sw.stripe_customer_id}/decline`, { decline: true });
+  r = await call("POST", "/api/employer/plan/billing", { token: keySw, body: { interval: "year" } });
+  sw = await empRow("pat@switchbank.test");
+  check("switching to yearly with a declined card changes nothing", r.status === 402 && sw.plan_interval === "month" && /card/i.test(r.data.error), r.data);
+  await fakeStripeCall(`/test/customers/${sw.stripe_customer_id}/decline`, { decline: false });
+  r = await call("POST", "/api/employer/plan/billing", { token: keySw, body: { interval: "year" } });
+  sw = await empRow("pat@switchbank.test");
+  const swInv = invoicesFor(sw.plan_subscription_id).filter((i) => i.reason === "subscription_update").at(-1);
+  check("switch to yearly: billed the year now, less credit for the unused month",
+    r.status === 200 && r.data.plan.interval === "year" && sw.plan_interval === "year" && swInv && swInv.amount > 99000 - 9900 - 100 && swInv.amount < 99000, { plan: r.data.plan?.interval, swInv });
+  r = await call("POST", "/api/employer/plan/billing", { token: keySw, body: { collection: "invoice", billing_email: "ap@switchbank.test", po_number: "" } });
+  sw = await empRow("pat@switchbank.test");
+  check("switch to invoice billing", r.status === 200 && r.data.plan.collection === "invoice" && fakeStripe.subs.get(sw.plan_subscription_id).collection_method === "send_invoice"
+    && fakeStripe.customers.get(sw.stripe_customer_id).email === "ap@switchbank.test", r.data);
+  r = await call("POST", "/api/employer/plan/billing", { token: keySw, body: { collection: "card" } });
+  check("…and back to card", r.status === 200 && r.data.plan.collection === "card" && fakeStripe.subs.get(sw.plan_subscription_id).collection_method === "charge_automatically", r.data);
+  r = await call("POST", "/api/employer/plan/billing", { token: keySw, body: { collection: "invoice", billing_email: "not-an-email" } });
+  check("a bad invoice email is refused", r.status === 400, r.data);
+  r = await call("POST", "/api/employer/plan/billing", { token: keyV, body: { interval: "year" } });
+  check("switching billing needs a live plan", r.status === 404 || r.status === 400, r.data);
+
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  const swRow = r.data.employers.find((e) => e.email === "pat@switchbank.test");
+  check("admin shows yearly plans as a monthly figure (÷12) and flags invoice billing",
+    swRow?.plan?.interval === "year" && swRow.plan.monthly_cents === Math.round(99000 / 12) && r.data.billing.yearly?.base_cents === 99000
+    && r.data.employers.find((e) => e.email === "pat@invoicebank.test")?.plan?.invoice === true, swRow?.plan);
+
+  // ================================================================
+  section("Claim your listings");
+  const [river] = await sql`SELECT * FROM institutions WHERE name = 'River City National Bank'`;
+  const [msnb] = await sql`SELECT * FROM institutions WHERE name = 'Muscle Shoals National Bank'`;
+  const [fsb1003] = await sql`SELECT * FROM institutions WHERE regulator_id = '1003' AND institution_type = 'bank'`;
+  const gathered = [];
+  for (const [title, loc] of [["Head Teller", "Decatur, AL"], ["Commercial Lender", "Huntsville, AL"], ["BSA Analyst", "Decatur, AL"]]) {
+    const [row] = await sql`INSERT INTO jobs (title, company, institution_type, location, category, summary, apply_url, source_name, source_url, institution_id, expires_at)
+      VALUES (${title}, 'River City National Bank', 'bank', ${loc}, 'branch-retail', ${title + " at River City."}, ${"https://rivercity.test/careers/" + gathered.length},
+              'River City careers', ${"https://rivercity.test/careers/" + gathered.length}, ${river.id}, now() + interval '30 days') RETURNING id`;
+    gathered.push(row.id);
+  }
+  await sql`INSERT INTO jobs (title, company, institution_type, location, category, summary, apply_url, source_name, source_url, institution_id, status, expires_at)
+    VALUES ('Old Closed Role', 'River City National Bank', 'bank', 'Decatur, AL', 'operations', 'Closed.', 'https://rivercity.test/careers/x', 'River City careers',
+            'https://rivercity.test/careers/x', ${river.id}, 'closed', now() + interval '30 days')`;
+  const riverSlug = river.slug;
+  r = await call("GET", `/api/claim/${riverSlug}`);
+  check("claim info (public): the institution's open gathered listings, its domain and the trial length",
+    r.status === 200 && r.data.institution.name === "River City National Bank" && r.data.institution.domain === "rivercity.test"
+    && r.data.jobs.length === 3 && r.data.trial_days === 30 && r.data.claimed === false && r.data.instant === null
+    && !r.data.jobs.some((j) => "apply_url" in j), r.data);
+  r = await call("GET", "/api/claim/no-such-bank-zz");
+  check("unknown institution: 404", r.status === 404);
+  r = await call("GET", "/api/claim/BAD%20slug!");
+  check("odd slugs are refused", r.status === 404);
+  r = await call("POST", `/api/claim/${riverSlug}`, { body: {} });
+  check("claiming needs an employer account", r.status === 401 && /sign in/i.test(r.data.error));
+  r = await call("GET", `/api/jobs/${gathered[0]}`);
+  check("a gathered listing carries its institution's claim slug", r.data.institution_slug === riverSlug && r.data.direct === false, r.data);
+  r = await call("GET", `/banks/${riverSlug}`);
+  check("institution page invites the bank to claim its listings", String(r.data).includes(`/#claim-${riverSlug}`) && String(r.data).includes("We list 3 of your openings"));
+
+  // A personal email: needs review.
+  const keyGm = await signedUp("riverhr.pat@gmail.com", "River City National Bank");
+  r = await call("GET", `/api/claim/${riverSlug}`, { token: keyGm });
+  check("a personal email is never an instant match", r.data.instant === false, r.data);
+  outbox().length = 0;
+  r = await call("POST", `/api/claim/${riverSlug}`, { token: keyGm, body: { job_ids: gathered } });
+  const adminMail = lastEmailTo("administrator@bankjobz.com");
+  check("…so the claim waits for review and the site owner is emailed",
+    r.status === 200 && r.data.status === "pending" && adminMail && /Claim to review: River City National Bank/.test(adminMail.subject) && adminMail.replyTo === "riverhr.pat@gmail.com"
+    && (await sql`SELECT COUNT(*)::int n FROM jobs WHERE id = ANY(${gathered}) AND employer_id IS NULL`)[0].n === 3, { r: r.data, adminMail: adminMail?.subject });
+  r = await call("POST", `/api/claim/${riverSlug}`, { token: keyGm, body: {} });
+  check("asking again doesn't duplicate the review or the email", r.data.status === "pending"
+    && (await sql`SELECT COUNT(*)::int n FROM institution_claims WHERE institution_id = ${river.id} AND status = 'pending'`)[0].n === 1
+    && outbox().filter((m) => m.to === "administrator@bankjobz.com").length === 1);
+  r = await call("GET", `/api/claim/${riverSlug}`, { token: keyGm });
+  check("their claim shows as pending", r.data.your_claim === "pending");
+
+  // A work email on the bank's own domain: instant, with a free trial.
+  const keyRc = await signedUp("pat@rivercity.test", "River City National Bank");
+  r = await call("GET", `/api/claim/${riverSlug}`, { token: keyRc });
+  check("a work email on the bank's domain is an instant match", r.data.instant === true);
+  const subsBefore = fakeStripe.subs.size;
+  r = await call("POST", `/api/claim/${riverSlug}`, { token: keyRc, body: { job_ids: [gathered[0], gathered[1], 999999] } });
+  let rc = await empRow("pat@rivercity.test");
+  const rcSub = fakeStripe.subs.get(rc.plan_subscription_id);
+  check("instant claim: the chosen listings become theirs and go live on a free trial",
+    r.status === 200 && r.data.status === "approved" && r.data.converted === 2 && r.data.live === 2 && !!r.data.trial_end, r.data);
+  check("…a real Stripe trial: no card, ends on its own without one, nothing invoiced",
+    fakeStripe.subs.size === subsBefore + 1 && rcSub.status === "trialing" && rcSub.trial_settings?.end_behavior?.missing_payment_method === "cancel"
+    && rcSub.items.data[0].quantity === 2 && invoicesFor(rcSub.id).length === 0 && rc.plan_status === "trialing" && !!rc.trial_used_at
+    && String(rc.institution_id) === String(river.id), { status: rcSub?.status, q: rcSub?.items.data[0].quantity });
+  const moved = await sql`SELECT * FROM jobs WHERE id = ANY(${gathered}) ORDER BY id`;
+  check("claimed listings: their account, Direct, live, original link kept for dedupe; the unchosen one stays gathered",
+    moved[0].employer_id == rc.id && moved[1].employer_id == rc.id && moved[2].employer_id === null
+    && moved[0].status === "open" && moved[0].source_name === null && moved[0].source_url === "https://rivercity.test/careers/0"
+    && moved[0].apply_url === "https://rivercity.test/careers/0" && moved[0].is_featured === true, moved.map((j) => [j.employer_id, j.status, j.source_name]));
+  r = await call("GET", `/api/jobs/${gathered[0]}`);
+  check("a claimed listing shows as Direct with no claim link", r.data.direct === true && r.data.institution_slug === null, r.data);
+  r = await call("GET", "/api/employer", { token: keyRc });
+  check("their dashboard: the trial, its end date, and the institution",
+    r.data.plan.trialing === true && !!r.data.plan.trial_end && r.data.plan.this_month_cents === 0 && r.data.plan.next_bill_cents === 9900
+    && r.data.account.institution?.slug === riverSlug && r.data.attention.some((a) => a.reason === "trial"), r.data.plan);
+  r = await call("POST", `/api/claim/${riverSlug}`, { token: keyRc, body: {} });
+  check("claiming again brings over listings gathered since, under the same trial",
+    r.data.status === "approved" && r.data.converted === 1 && r.data.live === 1 && !r.data.trial_end
+    && fakeStripe.subs.get(rc.plan_subscription_id).items.data[0].quantity === 3, r.data);
+  r = await call("GET", `/api/claim/${riverSlug}`, { token: keyRc });
+  check("now it's theirs", r.data.claimed === true && r.data.claimed_by_you === true && r.data.jobs.length === 0);
+  r = await call("POST", `/api/claim/${riverSlug}`, { token: keyInv, body: {} });
+  check("another account can't claim it", r.status === 409 && /already been claimed/.test(r.data.error), r.data);
+  r = await call("POST", `/api/claim/${msnb.slug}`, { token: keyRc, body: {} });
+  check("one institution per account", r.status === 409 && /another institution/.test(r.data.error), r.data);
+  r = await call("GET", `/banks/${riverSlug}`);
+  check("the institution page now says it's managed by the bank", String(r.data).includes("managed by River City National Bank") && !String(r.data).includes(`/#claim-${riverSlug}`));
+
+  // The earlier pending claim can no longer be approved.
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  const gmClaim = r.data.claims.find((c) => c.email === "riverhr.pat@gmail.com");
+  check("admin sees the claim waiting for review, with who and why (asking again with no picks means every listing)", gmClaim && gmClaim.institution === "River City National Bank" && gmClaim.job_count === 0
+    && !r.data.claimable.some((c) => c.slug === riverSlug), { gmClaim, claimable: r.data.claimable });
+  r = await call("POST", `/api/admin/claims/${gmClaim.id}/approve`, { token: "admin_e2e_token", body: {} });
+  check("approving a claim for an institution someone else now manages fails cleanly",
+    r.status === 409 && (await sql`SELECT status FROM institution_claims WHERE id = ${gmClaim.id}`)[0].status === "rejected", r.data);
+  r = await call("POST", `/api/admin/claims/${gmClaim.id}/approve`, { token: "admin_e2e_token", body: {} });
+  check("a decided claim can't be decided again", r.status === 409);
+
+  // No website on file: reviewed and approved by the site owner.
+  const msnbJobs = await sql`SELECT id FROM jobs WHERE employer_id IS NULL AND status = 'open' AND (institution_id = ${msnb.id} OR lower(company) = lower(${msnb.name}))`;
+  const keyMs = await signedUp("pat@msnb.test", "Muscle Shoals National Bank");
+  r = await call("POST", `/api/claim/${msnb.slug}`, { token: keyMs, body: {} });
+  check("no website on file: the claim waits for review", r.data.status === "pending", r.data);
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  check("admin's pitch list shows unclaimed institutions with listings, and their claim link slug",
+    r.data.claimable.some((c) => c.slug === msnb.slug && c.listings >= 1), r.data.claimable);
+  const msClaim = r.data.claims.find((c) => c.email === "pat@msnb.test");
+  outbox().length = 0;
+  r = await call("POST", `/api/admin/claims/${msClaim.id}/approve`, { token: "admin_e2e_token", body: {} });
+  const ms = await empRow("pat@msnb.test");
+  pmail = lastEmailTo("pat@msnb.test");
+  check("admin approves: listings move, the trial starts, and they're emailed",
+    r.status === 200 && r.data.status === "approved" && r.data.converted === msnbJobs.length && r.data.live === msnbJobs.length
+    && ms.plan_status === "trialing" && pmail && /Approved/.test(pmail.subject) && /free until/.test(pmail.text), { r: r.data, mail: pmail?.text });
+
+  // Rejected with a note.
+  const keyFs = await signedUp("pat@notfsbil.test", "First State Bank");
+  r = await call("POST", `/api/claim/${fsb1003.slug}`, { token: keyFs, body: {} });
+  const fsClaim = (await sql`SELECT id FROM institution_claims WHERE institution_id = ${fsb1003.id} AND status = 'pending'`)[0];
+  outbox().length = 0;
+  r = await call("POST", `/api/admin/claims/${fsClaim.id}/reject`, { token: "admin_e2e_token", body: { note: "We couldn't reach you at the bank's main number." } });
+  pmail = lastEmailTo("pat@notfsbil.test");
+  check("admin rejects with a note: they're told why", r.data.status === "rejected" && pmail && pmail.text.includes("main number"), pmail?.text);
+  r = await call("POST", "/api/admin/claims/1/approve", {});
+  check("deciding claims needs the admin key", r.status === 401);
+
+  // A claimed institution with nothing gathered: the first posting starts the trial, no Checkout.
+  const [fsb1002] = await sql`SELECT * FROM institutions WHERE regulator_id = '1002' AND institution_type = 'bank'`;
+  const keyF2 = await signedUp("pat@fsb1002.test", "First State Bank of Springfield");
+  r = await call("POST", `/api/claim/${fsb1002.slug}`, { token: keyF2, body: {} });
+  const f2Claim = (await sql`SELECT id FROM institution_claims WHERE institution_id = ${fsb1002.id} AND status = 'pending'`)[0];
+  r = await call("POST", `/api/admin/claims/${f2Claim.id}/approve`, { token: "admin_e2e_token", body: {} });
+  check("approved with no listings to move: nothing starts yet", r.data.status === "approved" && r.data.converted === 0 && !(await empRow("pat@fsb1002.test")).plan_subscription_id, r.data);
+  r = await call("GET", "/api/employer", { token: keyF2 });
+  check("their plan panel offers the free trial", r.data.plan.trial_available === true && r.data.plan.trial_days === 30, r.data.plan);
+  const sessCount = fakeStripe.sessions.size;
+  r = await call("POST", "/api/checkout", { token: keyF2, body: { ...jobFields, title: "Mortgage Loan Officer" } });
+  const f2 = await empRow("pat@fsb1002.test");
+  check("…and their first posting starts it: live, no Checkout, no card",
+    r.status === 200 && r.data.live === true && r.data.trial === true && fakeStripe.sessions.size === sessCount && f2.plan_status === "trialing", r.data);
+
+  // Trial reminder, then the trial ends without a card.
+  await fakeStripeCall(`/test/subscriptions/${rc.plan_subscription_id}`, { trial_ending_in_days: 2 });
+  await sendWebhook("customer.subscription.updated", fakeStripe.subs.get(rc.plan_subscription_id));
+  outbox().length = 0;
+  const sentReminders = await remindTrials();
+  pmail = lastEmailTo("pat@rivercity.test");
+  check("a few days before a trial ends, the employer is reminded what happens next",
+    sentReminders >= 1 && pmail && /free trial ends/.test(pmail.subject) && /add a card/.test(pmail.text) && /won't be charged/.test(pmail.text) && pmail.text.includes("$99/month"), pmail?.text);
+  check("…once", (await remindTrials()) === 0);
+  await fakeStripeCall(`/test/subscriptions/${rc.plan_subscription_id}`, { status: "canceled" });
+  await sendWebhook("customer.subscription.deleted", fakeStripe.subs.get(rc.plan_subscription_id));
+  const rcOpen = (await sql`SELECT COUNT(*)::int n FROM jobs WHERE employer_id = ${rc.id} AND status = 'open'`)[0].n;
+  r = await call("GET", "/api/employer", { token: keyRc });
+  check("a trial that ends without a card takes the postings down and isn't offered again",
+    rcOpen === 0 && r.data.plan.live === false && r.data.plan.trial_available === false, { rcOpen, plan: r.data.plan });
+  r = await call("POST", "/api/employer/jobs/" + gathered[0] + "/publish", { token: keyRc, body: {} });
+  check("…reopening a posting then starts a paid plan through Checkout", r.status === 200 && !!r.data.url, r.data);
+
+  // ================================================================
+  section("NMLS-verified candidates");
+  outbox().length = 0;
+  await call("POST", "/api/candidate-auth/request", { body: { email: "nora@example.test", name: "Nora Lane" } });
+  const nlink = lastEmailTo("nora@example.test")?.text.match(/clogin=([a-f0-9]{48})/)?.[1];
+  const ckN = (await call("POST", "/api/candidate-auth/verify", { body: { token: nlink } })).data.token;
+  const nProfile = { name: "Nora Lane", location: "Decatur, AL", work_mode_pref: "any", categories: ["lending-credit"], summary: "Mortgage loan originator, 8 years.", pool_visible: true };
+  r = await call("PUT", "/api/candidate", { token: ckN, body: { ...nProfile, nmls_id: "12ab" } });
+  check("an NMLS ID must be a number", r.status === 400 && /NMLS/.test(r.data.error));
+  r = await call("PUT", "/api/candidate", { token: ckN, body: { ...nProfile, nmls_id: " NMLS# 0123-456 " } });
+  r = await call("GET", "/api/candidate", { token: ckN });
+  check("a new NMLS ID is cleaned up and waits for review", r.data.candidate.nmls_id === "123456" && r.data.candidate.nmls_status === "pending", r.data.candidate);
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  const nRow = r.data.nmls.find((c) => c.email === "nora@example.test");
+  check("admin's NMLS queue lists it", nRow && nRow.nmls_id === "123456" && nRow.name === "Nora Lane", r.data.nmls);
+  outbox().length = 0;
+  r = await call("POST", `/api/admin/candidates/${nRow.id}/nmls/verify`, { token: "admin_e2e_token", body: {} });
+  pmail = lastEmailTo("nora@example.test");
+  check("admin verifies after checking NMLS by hand; the candidate is emailed", r.status === 200 && pmail && /verified/.test(pmail.subject));
+  r = await call("POST", `/api/admin/candidates/${nRow.id}/nmls/verify`, { token: "admin_e2e_token", body: {} });
+  check("it can't be verified twice", r.status === 409);
+  r = await call("GET", "/api/candidate", { token: ckN });
+  check("the profile shows it verified, with the date", r.data.candidate.nmls_status === "verified" && !!r.data.candidate.nmls_checked_at);
+  r = await call("PUT", "/api/candidate", { token: ckN, body: { ...nProfile } });
+  check("saving the profile without the field leaves the badge alone",
+    (await call("GET", "/api/candidate", { token: ckN })).data.candidate.nmls_status === "verified");
+  // Apply to a direct posting: the employer sees the badge and can check NMLS themselves.
+  const [msJob] = await sql`SELECT id FROM jobs WHERE employer_id = ${ms.id} AND status = 'open' LIMIT 1`;
+  await sql`UPDATE jobs SET apply_url = NULL WHERE id = ${msJob.id}`;
+  form = new FormData();
+  form.append("resume", new Blob([makePdf("Nora Lane, Decatur Alabama. Mortgage loan originator, eight years, NMLS licensed.")], { type: "application/pdf" }), "Nora Lane.pdf");
+  await call("POST", "/api/candidate/resume", { token: ckN, form });
+  r = await call("POST", "/api/candidate/apply", { token: ckN, body: { job_id: msJob.id } });
+  check("verified candidate applies", r.status === 200, r.data);
+  r = await call("GET", "/api/employer", { token: keyMs });
+  const nApp = r.data.applications.find((a) => a.email === "nora@example.test");
+  check("the employer sees the NMLS ID and its verified status", nApp?.nmls_id === "123456" && nApp.nmls_status === "verified", nApp);
+  r = await call("GET", "/api/employer/applications.csv", { token: keyMs });
+  check("…and it's in the applicant export", String(r.data).includes("NMLS ID") && String(r.data).includes("123456 (verified)"));
+  r = await call("GET", "/api/employer/talent?nmls=verified", { token: keyMs });
+  const nCard = r.data.candidates?.find((c) => c.summary === "Mortgage loan originator, 8 years.");
+  check("talent pool: filter to NMLS verified; the card shows the badge but not the ID (it would identify them)",
+    r.status === 200 && nCard?.nmls_verified === true && !JSON.stringify(nCard).includes("123456") && r.data.candidates.every((c) => c.nmls_verified), r.data.candidates?.length);
+  r = await call("PUT", "/api/candidate", { token: ckN, body: { ...nProfile, name: "Nora Lane-Smith" } });
+  r = await call("GET", "/api/candidate", { token: ckN });
+  check("changing the name on a verified ID sends it back for review", r.data.candidate.nmls_status === "pending", r.data.candidate.nmls_status);
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  const nRow2 = r.data.nmls.find((c) => c.email === "nora@example.test");
+  outbox().length = 0;
+  r = await call("POST", `/api/admin/candidates/${nRow2.id}/nmls/reject`, { token: "admin_e2e_token", body: { note: "Name on NMLS is Nora Lane" } });
+  pmail = lastEmailTo("nora@example.test");
+  r = await call("GET", "/api/candidate", { token: ckN });
+  check("a mismatch is rejected with a note the candidate sees", r.data.candidate.nmls_status === "rejected" && r.data.candidate.nmls_note === "Name on NMLS is Nora Lane"
+    && pmail && pmail.text.includes("Name on NMLS is Nora Lane"), r.data.candidate);
+  r = await call("PUT", "/api/candidate", { token: ckN, body: { ...nProfile, nmls_id: "" } });
+  r = await call("GET", "/api/candidate", { token: ckN });
+  check("clearing the ID clears the status", r.data.candidate.nmls_id === "" && r.data.candidate.nmls_status === "none");
+  r = await call("POST", `/api/admin/candidates/${nRow2.id}/nmls/verify`, {});
+  check("NMLS review needs the admin key", r.status === 401);
 } catch (err) {
   failed++;
   results.push(`\n  ✗ crashed: ${err.stack}`);

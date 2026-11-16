@@ -327,3 +327,42 @@ CREATE TABLE IF NOT EXISTS contact_messages (
 CREATE INDEX IF NOT EXISTS contact_messages_net_idx ON contact_messages (net_tag, created_at);
 CREATE INDEX IF NOT EXISTS contact_messages_mail_idx ON contact_messages (mail_tag, created_at);
 CREATE INDEX IF NOT EXISTS contact_messages_created_idx ON contact_messages (created_at DESC);
+
+-- Yearly plans, pay-by-invoice and free trials (Nov 2026). plan_interval is the plan's billing period
+-- (month or year), plan_collection is how Stripe collects (card or emailed invoice), plan_price_id is the
+-- Stripe price the plan is on, and plan_trial_end is set while a free trial runs.
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_price_id          TEXT;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_interval          TEXT NOT NULL DEFAULT 'month';
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_collection        TEXT NOT NULL DEFAULT 'charge_automatically';
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS plan_trial_end         TIMESTAMPTZ;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS trial_used_at          TIMESTAMPTZ;
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS trial_reminded_at      TIMESTAMPTZ;
+
+-- Claim your listings (Nov 2026): a bank or credit union takes over the listings we gathered from its
+-- careers site. A work email on the institution's own web domain is approved at once, and anything else
+-- waits for the site owner. One approved claim per institution.
+ALTER TABLE employers ADD COLUMN IF NOT EXISTS institution_id BIGINT REFERENCES institutions(id) ON DELETE SET NULL;
+CREATE TABLE IF NOT EXISTS institution_claims (
+  id             BIGSERIAL PRIMARY KEY,
+  institution_id BIGINT NOT NULL REFERENCES institutions(id) ON DELETE CASCADE,
+  employer_id    BIGINT NOT NULL REFERENCES employers(id) ON DELETE CASCADE,
+  status         TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+  method         TEXT NOT NULL CHECK (method IN ('domain', 'review')),
+  job_ids        BIGINT[] NOT NULL DEFAULT '{}',
+  note           TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_at     TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS institution_claims_approved_idx ON institution_claims (institution_id) WHERE status = 'approved';
+CREATE UNIQUE INDEX IF NOT EXISTS institution_claims_open_idx ON institution_claims (institution_id, employer_id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS institution_claims_status_idx ON institution_claims (status, created_at);
+
+-- NMLS verification (Nov 2026): a candidate's NMLS ID, checked by hand against the public NMLS
+-- Consumer Access record (automated lookups aren't allowed by its terms).
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS nmls_id         TEXT;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS nmls_status     TEXT NOT NULL DEFAULT 'none';
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS nmls_checked_at TIMESTAMPTZ;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS nmls_note       TEXT;
+ALTER TABLE candidates DROP CONSTRAINT IF EXISTS candidates_nmls_status_check;
+ALTER TABLE candidates ADD CONSTRAINT candidates_nmls_status_check CHECK (nmls_status IN ('none', 'pending', 'verified', 'rejected'));
+CREATE INDEX IF NOT EXISTS candidates_nmls_pending_idx ON candidates (nmls_status) WHERE nmls_status = 'pending';

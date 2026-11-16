@@ -49,6 +49,8 @@ export default async (req) => {
         text_ok: !!me.resume_text,
         core_systems: me.core_systems || [], licenses: me.licenses || [],
         pool_visible: !!me.pool_visible, blocked_employers: me.blocked_employers || "",
+        nmls_id: me.nmls_id || "", nmls_status: me.nmls_status || "none", nmls_checked_at: me.nmls_checked_at,
+        nmls_note: me.nmls_status === "rejected" ? me.nmls_note : null,
       },
       applications,
     });
@@ -71,6 +73,23 @@ export default async (req) => {
         pool_visible = ${b.pool_visible === true || b.pool_visible === "true"},
         blocked_employers = ${clean(b.blocked_employers, 600)}
       WHERE id = ${me.id}`;
+    // NMLS ID: digits only. A new or changed ID goes back to "pending" for a person to check against
+    // NMLS Consumer Access; clearing it clears the badge. Leaving it out of the request changes nothing.
+    // A name change on a verified ID also goes back to pending, since the name is what was matched.
+    let idChanged = false;
+    if ("nmls_id" in b) {
+      const raw = String(b.nmls_id ?? "").replace(/[\s#-]/g, "").replace(/^nmls/i, "");
+      if (raw && !/^\d{1,10}$/.test(raw)) return fail("An NMLS ID is a number of up to 10 digits.");
+      const id = raw.replace(/^0+(?=\d)/, "") || null;
+      if (id !== (me.nmls_id || null)) {
+        idChanged = true;
+        await sql`UPDATE candidates SET nmls_id = ${id}, nmls_status = ${id ? "pending" : "none"},
+          nmls_checked_at = NULL, nmls_note = NULL WHERE id = ${me.id}`;
+      }
+    }
+    if (!idChanged && me.nmls_id && me.nmls_status === "verified" && name !== me.name) {
+      await sql`UPDATE candidates SET nmls_status = 'pending', nmls_checked_at = NULL WHERE id = ${me.id}`;
+    }
     return json({ ok: true });
   }
 

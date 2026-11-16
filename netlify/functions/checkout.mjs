@@ -3,12 +3,17 @@
 // type come from the account, so the form only carries the job fields (plus confirm_upgrade).
 //   → { live: true, job_id }                        published under the existing plan
 //   → { url, job_id }                               no plan yet: Stripe Checkout starts one ($99/month)
+//   → { live: true, job_id, invoice: true }         no plan yet, pay_by "invoice": plan started, invoice emailed
+//   → { live: true, job_id, trial: true }           no plan yet, claimed institution: free trial started
+// Billing choices for a new plan: billing_interval "month" | "year", pay_by "card" | "invoice",
+// billing_email (where invoices go), po_number.
 //   → { needs_confirm, job_id, count, from_cents, to_cents }   this posting moves the plan up a tier;
 //        it's saved, unpublished, until confirmed (POST /api/employer/jobs/:id/publish { confirm: true })
 import {
   db, json, fail, clean, validateJob, employerFromRequest, findInstitutionId,
 } from "../lib/shared.mjs";
-import { publishPostings, createPlanCheckout, planPrice, BillingError } from "../lib/billing.mjs";
+import { publishPostings, planPrice, BillingError } from "../lib/billing.mjs";
+import { startPlanForPosting } from "../lib/claims.mjs";
 
 export default async (req) => {
   if (req.method !== "POST") return fail("Method not allowed", 405);
@@ -37,9 +42,14 @@ export default async (req) => {
 
   try {
     const r = await publishPostings(employer.id, [row.id], { confirm: body.confirm_upgrade === true });
-    if (r.needs_checkout) return json({ url: await createPlanCheckout(employer, row.id), job_id: row.id });
+    if (r.needs_checkout) {
+      const started = await startPlanForPosting(employer, row.id, {
+        interval: body.billing_interval, payBy: body.pay_by, billingEmail: body.billing_email, poNumber: body.po_number,
+      });
+      return json({ ...started, job_id: row.id });
+    }
     if (r.needs_confirm) return json({ ...r, job_id: row.id });
-    return json({ live: true, job_id: row.id, monthly_cents: r.monthly_cents, upgraded: r.upgraded });
+    return json({ live: true, job_id: row.id, monthly_cents: r.monthly_cents, upgraded: r.upgraded, interval: r.interval });
   } catch (err) {
     return fail(err.message, err instanceof BillingError ? err.status : 500);
   }

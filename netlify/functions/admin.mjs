@@ -4,12 +4,16 @@
 // POST /api/admin/jobs/:id/close      → take a listing down (cancels billing for a paid posting)
 // POST /api/admin/jobs/:id/reopen     → put a sourced listing back up for 30 days
 // POST /api/admin/maintenance         → run the expiry + dead-link check now
+// POST /api/admin/claims/:id/approve | reject   → { note? } decide a claim waiting for review
+// POST /api/admin/candidates/:id/nmls/verify | reject → { note? } after checking NMLS Consumer Access by hand
 import {
-  db, stripe, json, fail, safeEqual, validateJob, clean, isUrl, INSTITUTION_TYPES, isEntryLevel,
+  db, stripe, json, fail, safeEqual, validateJob, clean, isUrl, INSTITUTION_TYPES, isEntryLevel, siteUrl,
   findInstitutionId, isAggregatorUrl,
 } from "../lib/shared.mjs";
 import { runLinkCheck, closeExpired } from "../lib/tasks.mjs";
-import { planPrice, describePrice, monthlyCents, createPlanPrice, closePostings, planLive, reconcilePlans, BillingError } from "../lib/billing.mjs";
+import { planPrice, describePrice, monthlyCents, createPlanPrice, closePostings, planLive, reconcilePlans, remindTrials, BillingError } from "../lib/billing.mjs";
+import { decideClaim } from "../lib/claims.mjs";
+import { sendEmail, layout, esc } from "../lib/email.mjs";
 import { syncInstitutions } from "../lib/institutions.mjs";
 
 export default async (req) => {
@@ -42,20 +46,32 @@ export default async (req) => {
       GROUP BY j.id ORDER BY (j.employer_id IS NOT NULL) DESC, j.posted_at DESC LIMIT 500`;
     const employers = await sql`
       SELECT e.id, e.company, e.email, e.created_at, e.plan_subscription_id, e.plan_status, e.plan_paid_through,
-             e.plan_cancel_at_period_end, e.plan_quantity,
+             e.plan_cancel_at_period_end, e.plan_quantity, e.plan_interval, e.plan_collection, e.plan_trial_end,
              COUNT(j.id) FILTER (WHERE j.status = 'open')::int AS live_postings
       FROM employers e LEFT JOIN jobs j ON j.employer_id = e.id
       WHERE e.verified_at IS NOT NULL GROUP BY e.id ORDER BY e.created_at DESC`;
-    // Revenue: each live plan's next monthly bill, from the Stripe price.
-    let price = null, priceError = null;
-    try { price = await planPrice({ fresh: true }); } catch (err) { priceError = err.message; }
+    // Revenue: each paying plan's next bill from its Stripe price, as a monthly figure (yearly ÷ 12).
+    // Free trials aren't revenue yet; they're counted on their own.
+    let price = null, yearPrice = null, priceError = null;
+    try {
+      price = await planPrice({ fresh: true });
+      yearPrice = await planPrice({ fresh: true, interval: "year" });
+    } catch (err) { priceError = err.message; }
     const plans = employers.filter((e) => planLive(e));
-    const mrr = price ? plans.filter((e) => !e.plan_cancel_at_period_end)
-      .reduce((sum, e) => sum + monthlyCents(price, Math.max(1, Number(e.plan_quantity || 1))), 0) : 0;
+    const perMonth = (e) => {
+      const p = e.plan_interval === "year" ? yearPrice : price;
+      if (!p) return null;
+      const c = monthlyCents(p, Math.max(1, Number(e.plan_quantity || 1)));
+      return e.plan_interval === "year" ? Math.round(c / 12) : c;
+    };
+    const paying = plans.filter((e) => e.plan_status !== "trialing");
+    const mrr = paying.filter((e) => !e.plan_cancel_at_period_end).reduce((sum, e) => sum + (perMonth(e) || 0), 0);
     for (const e of employers) {
       e.plan = planLive(e) ? { renewing: !e.plan_cancel_at_period_end, paid_through: e.plan_paid_through,
-        monthly_cents: price ? monthlyCents(price, Math.max(1, Number(e.plan_quantity || 1))) : null } : null;
-      for (const k of ["plan_subscription_id", "plan_status", "plan_paid_through", "plan_cancel_at_period_end", "plan_quantity"]) delete e[k];
+        monthly_cents: perMonth(e), interval: e.plan_interval === "year" ? "year" : "month",
+        invoice: e.plan_collection === "send_invoice", trial_end: e.plan_status === "trialing" ? e.plan_trial_end : null } : null;
+      for (const k of ["plan_subscription_id", "plan_status", "plan_paid_through", "plan_cancel_at_period_end", "plan_quantity",
+        "plan_interval", "plan_collection", "plan_trial_end"]) delete e[k];
     }
     let directory = { banks: 0, credit_unions: 0 };
     try {
@@ -69,9 +85,29 @@ export default async (req) => {
       messages = await sql`SELECT id, name, email, organization, topic, message, emailed, created_at
         FROM contact_messages ORDER BY created_at DESC LIMIT 50`;
     } catch { /* contact table not migrated yet */ }
-    return json({ ...stats, ...counts, directory, mrr_cents: mrr, live_plans: plans.length,
-      renewing_plans: plans.filter((e) => !e.plan_cancel_at_period_end).length,
-      billing: { plan: describePrice(price), error: priceError }, jobs, employers, messages });
+    // Claims waiting for review, and institutions with gathered listings nobody has claimed yet
+    // (the outreach list: each has a claim link to send).
+    let claims = [], claimable = [], nmls = [];
+    try {
+      claims = await sql`
+        SELECT c.id, c.created_at, c.method, cardinality(c.job_ids)::int AS job_count, i.name AS institution, i.slug,
+               i.website, i.city, i.state, e.email, e.company, e.contact_name, e.contact_title
+        FROM institution_claims c JOIN institutions i ON i.id = c.institution_id JOIN employers e ON e.id = c.employer_id
+        WHERE c.status = 'pending' ORDER BY c.created_at`;
+      claimable = await sql`
+        SELECT i.name, i.slug, i.city, i.state, i.website, COUNT(j.id)::int AS listings
+        FROM institutions i JOIN jobs j ON j.institution_id = i.id
+        WHERE j.employer_id IS NULL AND j.status = 'open' AND j.expires_at > now()
+          AND NOT EXISTS (SELECT 1 FROM institution_claims c WHERE c.institution_id = i.id AND c.status = 'approved')
+        GROUP BY i.id ORDER BY listings DESC, i.name LIMIT 300`;
+      nmls = await sql`SELECT id, name, email, nmls_id, location, created_at FROM candidates
+        WHERE nmls_status = 'pending' ORDER BY created_at LIMIT 200`;
+    } catch { /* claim / NMLS tables not migrated yet */ }
+    return json({ ...stats, ...counts, directory, mrr_cents: mrr, live_plans: paying.length,
+      renewing_plans: paying.filter((e) => !e.plan_cancel_at_period_end).length,
+      trial_plans: plans.length - paying.length,
+      billing: { plan: describePrice(price), yearly: describePrice(yearPrice), error: priceError },
+      jobs, employers, messages, claims, claimable, nmls });
   }
 
   if (req.method !== "POST") return fail("Method not allowed", 405);
@@ -79,7 +115,8 @@ export default async (req) => {
   if (path === "/api/admin/maintenance") {
     const plans = await reconcilePlans().catch(() => 0);
     const expired = await closeExpired();
-    return json({ plans, expired, ...(await runLinkCheck()) });
+    const trial_reminders = await remindTrials().catch(() => 0);
+    return json({ plans, expired, trial_reminders, ...(await runLinkCheck()) });
   }
 
   // Creates the hiring-plan price in Stripe: $99 up to 5 postings, $159.99 up to 10, + extra_cents each over 10.
@@ -87,11 +124,44 @@ export default async (req) => {
     let b = {};
     try { b = await req.json(); } catch { /* empty */ }
     try {
-      const price = await createPlanPrice(Math.round(Number(b.extra_dollars) * 100));
-      return json({ ok: true, plan: describePrice(price) });
+      const { monthly, yearly } = await createPlanPrice(Math.round(Number(b.extra_dollars) * 100));
+      return json({ ok: true, plan: describePrice(monthly), yearly: describePrice(yearly) });
     } catch (err) {
       return fail(err.message, err instanceof BillingError ? err.status : 502);
     }
+  }
+
+  const claimMatch = path.match(/^\/api\/admin\/claims\/(\d+)\/(approve|reject)$/);
+  if (claimMatch) {
+    let b = {};
+    try { b = await req.json(); } catch { /* no note */ }
+    try { return json(await decideClaim(claimMatch[1], claimMatch[2] === "approve", clean(b.note, 600))); }
+    catch (err) { return fail(err.message, err instanceof BillingError ? err.status : 502); }
+  }
+
+  // NMLS: the site owner looked the ID up on NMLS Consumer Access and confirmed (or couldn't confirm)
+  // that it's an individual record matching the candidate's name.
+  const nmlsMatch = path.match(/^\/api\/admin\/candidates\/(\d+)\/nmls\/(verify|reject)$/);
+  if (nmlsMatch) {
+    let b = {};
+    try { b = await req.json(); } catch { /* no note */ }
+    const verified = nmlsMatch[2] === "verify";
+    const note = clean(b.note, 300) || null;
+    const [c] = await sql`UPDATE candidates SET nmls_status = ${verified ? "verified" : "rejected"}, nmls_checked_at = now(),
+        nmls_note = ${note}
+      WHERE id = ${nmlsMatch[1]} AND nmls_status = 'pending' AND nmls_id IS NOT NULL RETURNING email, name, nmls_id`;
+    if (!c) return fail("That NMLS ID isn't waiting for review (it may have changed or already been checked).", 409);
+    const text = verified
+      ? `Your NMLS ID ${c.nmls_id} is verified on BankJobz. Employers now see an NMLS verified badge on your applications and in the talent pool.`
+      : `We couldn't match NMLS ID ${c.nmls_id} to the name on your BankJobz profile${note ? ` (${note})` : ""}. Check the number and that your profile name matches your NMLS record, then save your profile again.`;
+    await sendEmail({
+      to: c.email,
+      subject: verified ? "Your NMLS ID is verified on BankJobz" : "We couldn't verify your NMLS ID",
+      text: `${text}\n\nYour profile: ${siteUrl()}/#profile`,
+      html: layout({ heading: verified ? "NMLS ID verified" : "We couldn't verify your NMLS ID", paragraphs: [esc(text)],
+        button: { label: "Open your profile", url: `${siteUrl()}/#profile` } }),
+    });
+    return json({ ok: true, status: verified ? "verified" : "rejected" });
   }
 
   // Institution directory sync: one page per call; the admin page loops until next_offset is null.

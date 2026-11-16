@@ -33,6 +33,8 @@ export function startFakeStripe(port = 12111) {
   const declining = new Set(); // customers whose card is declined
   const now = () => Math.floor(Date.now() / 1000);
   const periodEnd = (days = 30) => now() + days * 86400;
+  const daysFor = (price) => (price?.recurring?.interval === "year" ? 365 : 30);
+  const updates = []; // every subscriptions.update body, for assertions
   // Graduated tiers, as Stripe computes them.
   const amountFor = (price, qty) => {
     if (!price?.tiers) return (price?.unit_amount || 0) * qty;
@@ -61,7 +63,7 @@ export function startFakeStripe(port = 12111) {
         id: id("price"), object: "price", active: true, currency: form.currency, nickname: form.nickname || null,
         billing_scheme: form.billing_scheme || "per_unit", tiers_mode: form.tiers_mode || null,
         recurring: { interval: form.recurring?.interval || "month" }, lookup_key: form.lookup_key || null,
-        unit_amount: form.unit_amount ? Number(form.unit_amount) : null, product: id("prod"),
+        unit_amount: form.unit_amount ? Number(form.unit_amount) : null, product: form.product || id("prod"),
         tiers: form.tiers ? form.tiers.map((t) => ({ up_to: t.up_to === "inf" ? null : Number(t.up_to),
           flat_amount: Number(t.flat_amount || 0), unit_amount: Number(t.unit_amount || 0) })) : null,
       };
@@ -77,6 +79,38 @@ export function startFakeStripe(port = 12111) {
     }
     if (req.method === "GET" && (m = url.pathname.match(/^\/v1\/prices\/([^/]+)$/))) {
       return prices.has(m[1]) ? send(200, prices.get(m[1])) : notFound();
+    }
+    if (req.method === "POST" && url.pathname === "/v1/customers") {
+      const c = { id: id("cus"), object: "customer", email: form.email || null, name: form.name || null, metadata: form.metadata || {},
+        invoice_settings: { custom_fields: form.invoice_settings?.custom_fields || null } };
+      customers.set(c.id, c);
+      return send(200, c);
+    }
+    if (req.method === "POST" && (m = url.pathname.match(/^\/v1\/customers\/([^/]+)$/))) {
+      const c = customers.get(m[1]);
+      if (!c) return notFound();
+      if (form.email) c.email = form.email;
+      if (form.invoice_settings) c.invoice_settings = { custom_fields: form.invoice_settings.custom_fields || null };
+      return send(200, c);
+    }
+    if (req.method === "POST" && url.pathname === "/v1/subscriptions") {
+      if (!customers.has(form.customer)) return send(400, { error: { type: "invalid_request_error", message: `No such customer: '${form.customer}'` } });
+      const price = prices.get(form.items?.[0]?.price);
+      if (!price) return send(400, { error: { type: "invalid_request_error", message: "No such price" } });
+      const qty = Number(form.items[0].quantity || 1);
+      const trialDays = Number(form.trial_period_days || 0);
+      const end = trialDays ? periodEnd(trialDays) : periodEnd(daysFor(price));
+      const sub = {
+        id: id("sub"), object: "subscription", status: trialDays ? "trialing" : "active", customer: form.customer,
+        cancel_at_period_end: false, metadata: form.metadata || {}, quantity: qty,
+        collection_method: form.collection_method || "charge_automatically",
+        days_until_due: form.days_until_due ? Number(form.days_until_due) : null,
+        trial_end: trialDays ? end : null, trial_settings: form.trial_settings || null,
+        items: { object: "list", data: [{ id: id("si"), price, quantity: qty, current_period_start: now(), current_period_end: end }] },
+      };
+      subs.set(sub.id, sub);
+      if (!trialDays) invoices.push({ subscription: sub.id, amount: amountFor(price, qty), reason: "subscription_create", quantity: qty, collection: sub.collection_method });
+      return send(200, sub);
     }
     if (req.method === "POST" && url.pathname === "/v1/checkout/sessions") {
       const s = {
@@ -101,6 +135,29 @@ export function startFakeStripe(port = 12111) {
       if (!sub) return notFound();
       if (req.method === "GET") return send(200, sub);
       if (req.method === "POST") {
+        updates.push({ subscription: sub.id, ...form });
+        if (form.collection_method) {
+          sub.collection_method = form.collection_method;
+          sub.days_until_due = form.collection_method === "send_invoice" ? Number(form.days_until_due || 30) : null;
+        }
+        if (form.items?.[0]?.price) {
+          const change = form.items[0];
+          const item = sub.items.data.find((i) => i.id === change.id);
+          if (!item) return send(400, { error: { type: "invalid_request_error", message: `No such subscription item: '${change.id}'` } });
+          const next = prices.get(change.price);
+          if (!next) return send(400, { error: { type: "invalid_request_error", message: "No such price" } });
+          const qty = Number(change.quantity || item.quantity);
+          if (sub.status !== "trialing" && form.proration_behavior === "always_invoice") {
+            if (declining.has(sub.customer) && form.payment_behavior === "error_if_incomplete") {
+              return send(402, { error: { type: "card_error", code: "card_declined", message: "Your card was declined." } });
+            }
+            const unused = Math.round(amountFor(item.price, item.quantity) * Math.max(0, item.current_period_end - now()) / Math.max(1, item.current_period_end - item.current_period_start));
+            invoices.push({ subscription: sub.id, amount: amountFor(next, qty) - unused, reason: "subscription_update", quantity: qty, collection: sub.collection_method });
+            if (next.recurring?.interval !== item.price.recurring?.interval) { item.current_period_start = now(); item.current_period_end = periodEnd(daysFor(next)); }
+          }
+          item.price = next; item.quantity = qty; sub.quantity = qty;
+          return send(200, sub);
+        }
         if (form.items) {
           const change = form.items[0];
           const item = sub.items.data.find((i) => i.id === change.id);
@@ -113,7 +170,7 @@ export function startFakeStripe(port = 12111) {
             if (declining.has(sub.customer) && form.payment_behavior === "error_if_incomplete") {
               return send(402, { error: { type: "card_error", code: "card_declined", message: "Your card was declined." } });
             }
-            invoices.push({ subscription: sub.id, amount: prorated, reason: "subscription_update", quantity: qty });
+            invoices.push({ subscription: sub.id, amount: prorated, reason: "subscription_update", quantity: qty, collection: sub.collection_method });
           }
           item.quantity = qty;
           sub.quantity = qty;
@@ -158,6 +215,7 @@ export function startFakeStripe(port = 12111) {
         invoices.push({ subscription: sub.id, amount: amountFor(item.price, item.quantity ?? 1), reason: "subscription_cycle", quantity: item.quantity ?? 1 });
       }
       if (patch.expire) { sub.items.data[0].current_period_end = now() - 86400 * 5; }
+      if (patch.trial_ending_in_days != null) { sub.trial_end = now() + patch.trial_ending_in_days * 86400; sub.items.data[0].current_period_end = sub.trial_end; }
       return send(200, sub);
     }
     if (req.method === "POST" && (m = url.pathname.match(/^\/test\/customers\/([^/]+)\/decline$/))) {
@@ -168,5 +226,5 @@ export function startFakeStripe(port = 12111) {
     return send(404, { error: { message: `fake-stripe: unhandled ${req.method} ${url.pathname}` } });
   });
 
-  return new Promise((resolve) => server.listen(port, () => resolve({ server, sessions, subs, customers, prices, invoices, amountFor })));
+  return new Promise((resolve) => server.listen(port, () => resolve({ server, sessions, subs, customers, prices, invoices, updates, amountFor })));
 }
