@@ -58,7 +58,7 @@
     : id && link ? `<span class="tag">NMLS #${esc(id)}</span> <a href="${nmlsUrl(id)}" target="_blank" rel="noopener">check on NMLS ↗</a>` : "";
   const STAGES = { new: "New", reviewing: "Reviewing", interview: "Interview", offer: "Offer", hired: "Hired", rejected: "Not a fit" };
 
-  const state = { jobs: [], demo: false, filters: { q: "", category: "", institution_type: "", work_mode: "", core_system: "", license: "", level: "" }, appFilter: "" };
+  const state = { jobs: [], loaded: false, demo: false, filters: { q: "", category: "", institution_type: "", work_mode: "", core_system: "", license: "", level: "" }, appFilter: "" };
   const blankFilters = (extra = {}) => ({ q: "", category: "", institution_type: "", work_mode: "", core_system: "", license: "", level: "", ...extra });
   // Early careers. "entry" = roles for new graduates (not internships); "internship" = internships.
   const LEVELS = { entry: "Entry level · new grads", internship: "Internships" };
@@ -145,9 +145,11 @@
   const honeypot = `<div class="hp" aria-hidden="true"><label>Company website<input name="company_website" tabindex="-1" autocomplete="off"></label></div>`;
 
   // ---------- data ----------
-  async function loadJobs() {
+  // The first load takes the CDN-cached list (fast on a cold start); later reloads, after posting or
+  // editing, ask for a fresh one so a change shows at once.
+  async function loadJobs({ cached = false } = {}) {
     try {
-      const data = await api("/api/jobs");
+      const data = await api(cached ? "/api/jobs" : `/api/jobs?fresh=${Date.now()}`);
       state.jobs = data.jobs;
       state.ai = !!data.ai;
       state.demo = false;
@@ -669,6 +671,8 @@
     for (const j of ranked) if (!seenCats.has(j.category)) { preview.push(j); seenCats.add(j.category); if (preview.length === 4) break; }
     for (const j of ranked) { if (preview.length === 4) break; if (!preview.includes(j)) preview.push(j); }
 
+    const ready = state.loaded;
+    const n = (v) => (ready ? v : "—");
     view.innerHTML = `
       <section class="home-hero">
         <canvas id="guilloche" aria-hidden="true"></canvas>
@@ -683,15 +687,15 @@
             </div>
           </div>
           <aside class="statement" aria-label="Latest openings">
-            <div class="statement-head"><span>Latest openings</span><span>${jobs.length} open</span></div>
+            <div class="statement-head"><span>Latest openings</span><span>${ready ? `${jobs.length} open` : "Loading…"}</span></div>
             <ul>
-              ${preview.map((j) => `<li><a href="${jobHref(j.id)}">
+              ${ready ? preview.map((j) => `<li><a href="${jobHref(j.id)}">
                 <span class="st-title">${esc(j.title)}</span>
                 <span class="st-meta">${esc(j.company)} · ${esc(j.location)}</span>
                 <span class="st-pay">${salary(j) ? esc(salary(j)) : "—"}</span>
-              </a></li>`).join("")}
+              </a></li>`).join("") : `<li class="skel"><span class="skel-line"></span><span class="skel-line short"></span></li>`.repeat(4)}
             </ul>
-            <a class="statement-foot" href="#jobs">See all ${jobs.length} positions →</a>
+            <a class="statement-foot" href="#jobs">${ready ? `See all ${jobs.length} positions →` : "See all positions →"}</a>
           </aside>
         </div>
       </section>
@@ -700,10 +704,10 @@
 
       <section class="figures">
         <div class="wrap figures-grid">
-          <div><strong>${jobs.length}</strong><span>open banking jobs</span></div>
-          <div><strong>${institutions}</strong><span>banks and credit unions hiring</span></div>
-          <div><strong>${jobs.filter((j) => j.work_mode !== "onsite").length}</strong><span>remote or hybrid roles</span></div>
-          <div><strong>${withPay.length}</strong><span>listings with posted pay</span></div>
+          <div><strong>${n(jobs.length)}</strong><span>open banking jobs</span></div>
+          <div><strong>${n(institutions)}</strong><span>banks and credit unions hiring</span></div>
+          <div><strong>${n(jobs.filter((j) => j.work_mode !== "onsite").length)}</strong><span>remote or hybrid roles</span></div>
+          <div><strong>${n(withPay.length)}</strong><span>listings with posted pay</span></div>
         </div>
       </section>
 
@@ -3044,8 +3048,6 @@
   }
 
   function route() {
-    document.getElementById("flash").hidden = true;
-    if (state.pendingFlash) { const [t, bad] = state.pendingFlash; state.pendingFlash = null; setTimeout(() => flash(t, bad), 0); }
     // A real /jobs/123 URL (served by the job page function) shows that job until another view is picked.
     const pathJob = location.pathname.match(/^\/jobs\/(\d+)\/?$/);
     // An email button pasted into a tab that's already open arrives as a hash change.
@@ -3062,6 +3064,18 @@
       else a.removeAttribute("aria-current");
     });
     updateNav();
+    // Pages built from the job list or plan prices wait for them (a placeholder shows meanwhile); the
+    // home page draws at once and fills in its numbers when they arrive.
+    const needsData = h.startsWith("job-") || h.startsWith("claim-") || h.startsWith("edit-") || ["jobs", "new-grads", "internships", "post"].includes(h);
+    if (needsData && !state.loaded) {
+      view.innerHTML = `<div class="wrap narrow boot-wait"><span class="skel-line"></span><span class="skel-line"></span><span class="skel-line short"></span></div>`;
+      const at = location.href;
+      state.dataReady.then(() => { if (location.href === at) route(); });
+      return;
+    }
+    // A one-time notice shows with the page it belongs to (not on the placeholder above).
+    document.getElementById("flash").hidden = true;
+    if (state.pendingFlash) { const [t, bad] = state.pendingFlash; state.pendingFlash = null; setTimeout(() => flash(t, bad), 0); }
     if (h.startsWith("job-")) viewJob(h.slice(4));
     else if (h.startsWith("edit-")) viewEdit(h.slice(5));
     else if (h.startsWith("claim-")) viewClaim(h.slice(6));
@@ -3123,5 +3137,22 @@
     if (c.closest(".home-hero")) drawGuilloche(c, { x: 0.86, scale: 0.7, max: 300, alpha: 0.11 });
     else drawGuilloche(c);
   });
-  Promise.all([loadJobs(), loadPlan(), handleEmailLinks()]).then(route);
+  // Start loading data, but draw the page right away rather than waiting for it.
+  state.dataReady = Promise.all([loadJobs({ cached: true }), loadPlan()]).then(() => { state.loaded = true; });
+  handleEmailLinks().catch(() => {}).then(() => {
+    route();
+    state.dataReady.then(() => {
+      const h = location.hash.replace(/^#/, "");
+      const onHome = (!h || h === "home") && !/^\/jobs\/\d+/.test(location.pathname);
+      if (!onHome || !document.querySelector(".home-hero")) return;
+      // Redraw the home page with the numbers, keeping anything typed into its search boxes.
+      const typed = [...view.querySelectorAll("form[data-early] input")].map((i) => i.value);
+      const focused = document.activeElement?.closest?.("form[data-early]")?.dataset.early;
+      const y = window.scrollY;
+      viewHome();
+      view.querySelectorAll("form[data-early] input").forEach((i, k) => { if (typed[k]) i.value = typed[k]; });
+      if (focused) view.querySelector(`form[data-early="${focused}"] input`)?.focus();
+      window.scrollTo(0, y);
+    });
+  });
 })();

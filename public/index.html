@@ -8,8 +8,15 @@
 <meta name="description" content="Jobs at banks and credit unions: branch, lending, operations, compliance, technology and more. Employers post up to 5 jobs for $99 a month.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..900&family=IBM+Plex+Mono:wght@400;500&family=Source+Sans+3:wght@400;600;700&display=swap">
+<!-- Fonts load without holding up the first paint; text shows in the fallback font for a moment, then swaps. -->
+<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..900&family=IBM+Plex+Mono:wght@400;500&family=Source+Sans+3:wght@400;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..900&family=IBM+Plex+Mono:wght@400;500&family=Source+Sans+3:wght@400;600;700&display=swap"></noscript>
 <link rel="stylesheet" href="/app.css">
+<link rel="preload" as="fetch" href="/api/jobs" crossorigin="anonymous">
+<script>
+  // Before the app script arrives: show the home page's navy band on the home page, a blank page elsewhere.
+  (function () { var h = location.hash.replace(/^#/, ""); document.documentElement.setAttribute("data-boot", (!h || h === "home") && !/^\/jobs\//.test(location.pathname) ? "home" : "page"); })();
+</script>
 </head>
 <body>
 <!--APP-START-->
@@ -30,7 +37,7 @@
   <div class="wrap">Preview mode: showing the sourced seed listings. Applying and paid posting work once the site is deployed with its database and Stripe keys.</div>
 </div>
 <div class="wrap flash" id="flash" role="status" hidden><p class="msg"></p></div>
-<main id="view" aria-live="polite"></main>
+<main id="view" aria-live="polite"><div class="boot" aria-hidden="true"><section class="boot-hero"><div class="wrap"><span></span><span></span><span></span></div></section></div></main>
 <footer class="site-foot">
   <div class="wrap">
     <span>BankJobz. Jobs at banks and credit unions. <b class="vet-line">A veteran-owned small business. A percentage of every sale goes to help veterans in need.</b></span>

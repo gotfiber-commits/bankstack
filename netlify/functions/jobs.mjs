@@ -51,7 +51,16 @@ export default async (req, context) => {
      ORDER BY is_featured DESC, (employer_id IS NOT NULL) DESC, posted_at DESC LIMIT 200`,
     args
   );
-  return json({ jobs: rows, ai: aiEnabled() });
+  // The plain list (what every page load asks for first) is cached at Netlify's edge for 30 seconds and
+  // served stale while it refreshes, so a visitor rarely waits on the database. Browsers always check
+  // back, and the app asks for ?fresh=… after posting or editing, which skips the edge cache.
+  const plain = [...p.keys()].length === 0;
+  const res = json({ jobs: rows, ai: aiEnabled() });
+  if (plain) {
+    res.headers.set("cache-control", "public, max-age=0, must-revalidate");
+    res.headers.set("netlify-cdn-cache-control", "public, durable, s-maxage=30, stale-while-revalidate=60");
+  }
+  return res;
 };
 
 export const config = { path: ["/api/jobs", "/api/jobs/:id"] };

@@ -1531,6 +1531,15 @@ try {
     r.data.directory.banks === FAKE_BANKS.length && r.data.directory.credit_unions === FAKE_CUS.length, r.data.directory);
 
   // ================================================================
+  section("Job list caching");
+  let jr = await fetch(BASE + "/api/jobs");
+  check("the plain job list is cached at the edge briefly; browsers always revalidate",
+    /s-maxage=30/.test(jr.headers.get("netlify-cdn-cache-control") || "") && /max-age=0/.test(jr.headers.get("cache-control") || ""), [...jr.headers]);
+  jr = await fetch(BASE + "/api/jobs?fresh=123");
+  check("a fresh or filtered request is never cached", !jr.headers.get("netlify-cdn-cache-control") && jr.headers.get("cache-control") === "no-store");
+  jr = await fetch(BASE + "/api/jobs?category=compliance-risk");
+  check("…filtered too", !jr.headers.get("netlify-cdn-cache-control"));
+
   section("Yearly plans and pay-by-invoice");
   const { remindTrials } = await import("../netlify/lib/billing.mjs");
   const signedUp = async (email, company, extra = {}) => {

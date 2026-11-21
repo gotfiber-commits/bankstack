@@ -687,6 +687,32 @@ try {
     return pg;
   };
 
+  section("First paint: the page draws before its data arrives");
+  const slow = await newPage();
+  // Hold the job list and plan prices back for 3 seconds, like a cold database and Stripe.
+  await slow.route(/\/api\/(jobs|plan)(\?|$)/, async (rt) => { await new Promise((res) => setTimeout(res, 3000)); await rt.continue(); });
+  const t0 = Date.now();
+  await slow.goto(BASE + "/", { waitUntil: "domcontentloaded" });
+  await slow.waitForSelector(".home-hero h1", { timeout: 1500 });
+  const drawnIn = Date.now() - t0;
+  const footTop = await slow.evaluate(() => document.querySelector(".site-foot").getBoundingClientRect().top);
+  const vh = await slow.evaluate(() => window.innerHeight);
+  check("home page draws within a second while the data is still loading", drawnIn < 1000, `${drawnIn} ms`);
+  check("…and the footer stays below the fold meanwhile", footTop >= vh, { footTop, vh });
+  check("…with placeholders where the numbers go", (await slow.textContent(".statement-head")).includes("Loading") && await slow.locator(".statement li.skel").count() === 4);
+  await slow.fill('form[data-early="new-grads"] input', "teller");
+  await slow.waitForSelector(".statement li a", { timeout: 6000 });
+  check("when the data arrives the numbers fill in", /\d+ open/.test(await slow.textContent(".statement-head")));
+  check("…keeping anything already typed in a search box", (await slow.inputValue('form[data-early="new-grads"] input')) === "teller");
+  const slowJobs = await newPage();
+  await slowJobs.route(/\/api\/jobs(\?|$)/, async (rt) => { await new Promise((res) => setTimeout(res, 2000)); await rt.continue(); });
+  await slowJobs.goto(BASE + "/#jobs", { waitUntil: "domcontentloaded" });
+  await slowJobs.waitForSelector(".boot-wait", { timeout: 1500 });
+  const jfoot = await slowJobs.evaluate(() => document.querySelector(".site-foot").getBoundingClientRect().top >= window.innerHeight);
+  check("a page built from the job list shows a placeholder, footer below the fold, until the list arrives", jfoot);
+  await slowJobs.waitForSelector("#job-list li, .job-list li, .job-row, [data-job]", { timeout: 6000 }).catch(() => {});
+  check("…then the list draws", await slowJobs.locator(".boot-wait").count() === 0);
+
   section("Pay-transparency check on the post form");
   const ptKey = await employerToken("pat@paycheck.test", "Paycheck Savings Bank");
   const pt = await pageAs("bankstack.key", ptKey);
