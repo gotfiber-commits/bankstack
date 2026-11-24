@@ -77,7 +77,7 @@ ${noindex ? `<meta name="robots" content="noindex, follow">` : ""}
 </style>
 </head>
 <body>
-<header class="site-head"><div class="wrap"><a class="brand" href="/">${BRAND}</a>
+<header class="site-head"><div class="wrap"><a class="brand" href="/"><svg class="brand-mark" viewBox="4 6 56 52" aria-hidden="true" focusable="false"><path fill="currentColor" fill-rule="evenodd" d="M32 6 L58 20 L6 20 Z M32.00 10.90 L33.12 13.96 L36.37 14.08 L33.81 16.09 L34.70 19.22 L32.00 17.40 L29.30 19.22 L30.19 16.09 L27.63 14.08 L30.88 13.96 Z"/><path fill="currentColor" d="M6 22h52v5H6z M10 30h7v19h-7z M21.5 30h7v19h-7z M35.5 30h7v19h-7z M47 30h7v19h-7z"/><path style="fill:var(--red,#c8102e)" d="M4 52h56v6H4z"/></svg><span>${BRAND}</span></a>
 <nav class="nav"><a href="/#jobs">Current positions</a><a href="/banks">Bank directory</a><a href="/#contact">Contact</a><a class="cta" href="/#post">Post a job</a></nav></div></header>
 <main class="dir">
 ${body}

@@ -67,9 +67,10 @@ h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; line-height: 
 }
 .site-head .wrap { display: flex; align-items: center; gap: 1rem; padding-block: 0.75rem; flex-wrap: wrap; }
 .brand {
-  display: flex; align-items: baseline; gap: 0.5rem; text-decoration: none; color: var(--fg);
+  display: flex; align-items: center; gap: 0.5rem; text-decoration: none; color: var(--fg);
   font-family: var(--font-display); font-weight: 800; font-size: 1.2rem; letter-spacing: -0.01em;
 }
+.brand-mark { width: 1.6em; height: 1.49em; flex-shrink: 0; margin-top: -0.12em; }
 .nav { display: flex; gap: 0.25rem; margin-left: auto; }
 .nav a {
   text-decoration: none; color: var(--muted); font-weight: 600; font-size: 0.9rem;
