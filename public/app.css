@@ -813,17 +813,13 @@ h1, h2, h3 { letter-spacing: -0.01em; }
 /* First paint: the main area holds its space so the footer never flashes at the top, and the home page
    shows its navy band until the app draws the real page (usually a fraction of a second). */
 #view { min-height: 75vh; }
-.boot-hero { display: none; }
-[data-boot="home"] .boot-hero { display: block; background: linear-gradient(180deg, #0a2a5e 0%, var(--navy-deep) 100%); min-height: 520px; padding: 4.5rem 0; }
-.boot-hero .wrap { display: flex; flex-direction: column; gap: 1rem; }
-.boot-hero span { display: block; height: 2.6rem; max-width: 640px; border-radius: 4px; background: rgba(255, 255, 255, 0.1); }
-.boot-hero span:nth-child(2) { max-width: 520px; }
-.boot-hero span:nth-child(3) { height: 1.1rem; max-width: 460px; margin-top: 0.75rem; }
+.boot-home { display: none; }
+[data-boot="home"] .boot-home { display: block; min-height: 520px; }
 .skel-line { display: block; height: 0.9rem; border-radius: 3px; background: var(--line); margin: 0.2rem 0; }
 .skel-line.short { width: 55%; }
 .statement li.skel { padding: 0.75rem 0; }
 @media (prefers-reduced-motion: no-preference) {
-  .boot-hero span, .skel-line { animation: skel-pulse 1.4s ease-in-out infinite; }
+  .skel-line { animation: skel-pulse 1.4s ease-in-out infinite; }
   @keyframes skel-pulse { 50% { opacity: 0.55; } }
 }
 .boot, .boot-wait { min-height: 100vh; }

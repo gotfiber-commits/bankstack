@@ -4,8 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0a2a5e">
-<title>BankJobz</title>
-<meta name="description" content="Jobs at banks and credit unions: branch, lending, operations, compliance, technology and more. Employers post up to 5 jobs for $99 a month.">
+<title>BankJobz | Jobs at Banks &amp; Credit Unions</title>
+<meta name="description" content="BankJobz (Bank Jobz) is the job board for banks and credit unions: teller, loan officer, branch, lending, compliance, operations and technology jobs. Veteran-owned.">
+<link rel="canonical" href="/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-48.png" sizes="48x48" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="BankJobz">
+<meta property="og:title" content="BankJobz | Jobs at Banks &amp; Credit Unions">
+<meta property="og:description" content="The job board for banks and credit unions, from tellers and loan officers to compliance, operations and technology. Veteran-owned.">
+<meta property="og:url" content="https://bankjobz.com/">
+<meta property="og:image" content="https://bankjobz.com/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<!--SITE-LD--><script type="application/ld+json">[{"@context":"https://schema.org","@type":"WebSite","name":"BankJobz","alternateName":["Bank Jobz","BankJobz.com"],"url":"https://bankjobz.com/"},{"@context":"https://schema.org","@type":"Organization","name":"BankJobz","alternateName":"Bank Jobz","url":"https://bankjobz.com/","logo":"https://bankjobz.com/icon-192.png","email":"administrator@bankjobz.com","description":"A veteran-owned job board for jobs at banks and credit unions."}]</script><!--/SITE-LD-->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="/app.css">
@@ -45,7 +59,24 @@
   <div class="wrap">Preview mode: showing the sourced seed listings. Applying and paid posting work once the site is deployed with its database and Stripe keys.</div>
 </div>
 <div class="wrap flash" id="flash" role="status" hidden><p class="msg"></p></div>
-<main id="view" aria-live="polite"><div class="boot" aria-hidden="true"><section class="boot-hero"><div class="wrap"><span></span><span></span><span></span></div></section></div></main>
+<main id="view" aria-live="polite"><div class="boot">
+<!--HOME-STATIC: real text for search engines and the first paint on the home page. The app replaces it.
+    job-page.mjs removes it from job pages. Keep the wording in step with the home hero in app.js. -->
+<section class="home-hero boot-home">
+  <div class="wrap home-hero-grid">
+    <div class="home-hero-copy">
+      <p class="eyebrow">Banks · Credit unions · Every department</p>
+      <h1>The job board for <em>banks and credit unions</em>.</h1>
+      <p class="lede">BankJobz lists jobs at banks and credit unions only, from tellers and loan officers to compliance, operations, technology and leadership. Candidates find roles that value banking experience. Banks reach people who already know the industry.</p>
+      <div class="cta-row">
+        <a class="btn btn-lg" href="/#jobs">View current positions</a>
+        <a class="btn btn-lg secondary" href="/#post">Post a job</a>
+      </div>
+    </div>
+  </div>
+</section>
+<!--/HOME-STATIC-->
+</div></main>
 <footer class="site-foot">
   <div class="wrap">
     <span>BankJobz. Jobs at banks and credit unions. <b class="vet-line">A veteran-owned small business. A percentage of every sale goes to help veterans in need.</b></span>

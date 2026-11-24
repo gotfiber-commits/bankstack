@@ -52,7 +52,13 @@ export default async (req, context) => {
   const id = context.params?.id;
 
   const shellRes = await fetch(`${base}/index.html`);
-  let html = await shellRes.text();
+  // The shell is the home page: drop its home-only parts (the static home hero, its canonical, share
+  // tags and site-wide structured data) so each job page carries only its own.
+  let html = (await shellRes.text())
+    .replace(/<!--HOME-STATIC[\s\S]*?<!--\/HOME-STATIC-->/, "")
+    .replace(/<!--SITE-LD-->[\s\S]*?<!--\/SITE-LD-->\n?/, "")
+    .replace(/^<link rel="canonical"[^>]*>\n?/m, "")
+    .replace(/^<meta (property="og:|name="twitter:)[^>]*>\n?/gm, "");
 
   const [job] = /^\d+$/.test(id || "")
     ? await db()`SELECT * FROM jobs WHERE id = ${id} AND status = 'open' AND expires_at > now()`
@@ -72,7 +78,9 @@ export default async (req, context) => {
     `<meta property="og:title" content="${esc(title)}">`,
     `<meta property="og:description" content="${esc(desc)}">`,
     `<meta property="og:url" content="${esc(url)}">`,
-    `<meta name="twitter:card" content="summary">`,
+    `<meta property="og:site_name" content="${esc(BRAND)}">`,
+    `<meta property="og:image" content="${esc(base)}/og-image.png">`,
+    `<meta name="twitter:card" content="summary_large_image">`,
     job.employer_id
       ? `<script type="application/ld+json">${JSON.stringify(jobPostingLd(job, base)).replace(/</g, "\\u003c")}</script>`
       : `<meta name="robots" content="noindex, follow">`,

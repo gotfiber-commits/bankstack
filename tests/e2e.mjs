@@ -1961,6 +1961,29 @@ try {
   r = await call("GET", "/api/alerts/confirm?token=nope", { raw: true });
   check("redirects carry the base headers", r.status === 303 && hdr(r, "x-content-type-options") === "nosniff");
 
+  // Search engines: the home page carries real text, a descriptive title, brand data and icons;
+  // job pages carry only their own canonical, share tags and data.
+  r = await fetch(`${BASE}/`);
+  const homeHtml = await r.text();
+  const ldBlocks = [...homeHtml.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)].map((m) => JSON.parse(m[1]));
+  const site = ldBlocks.flat().find((x) => x["@type"] === "WebSite");
+  check("home page: descriptive title and one canonical", /<title>BankJobz \| Jobs at Banks &amp; Credit Unions<\/title>/.test(homeHtml)
+    && (homeHtml.match(/rel="canonical"/g) || []).length === 1);
+  check("home page: the headline and intro are in the HTML itself, before any script runs",
+    /<h1>The job board for <em>banks and credit unions<\/em>.<\/h1>/.test(homeHtml) && /tellers and loan officers/.test(homeHtml));
+  check("home page: WebSite data names the site BankJobz, also known as Bank Jobz", site?.name === "BankJobz" && site.alternateName.includes("Bank Jobz"), site);
+  check("home page: share image and favicon tags", /og:image" content="https:\/\/bankjobz.com\/og-image.png"/.test(homeHtml) && /rel="icon" href="\/favicon.svg"/.test(homeHtml));
+  for (const f of ["/favicon.svg", "/favicon-48.png", "/apple-touch-icon.png", "/icon-192.png", "/og-image.png"]) {
+    const fr = await fetch(BASE + f);
+    check(`${f} is served`, fr.status === 200 && (await fr.arrayBuffer()).byteLength > 300);
+  }
+  const jobHtml = await (await fetch(`${BASE}/jobs/${openJob.id}`)).text();
+  check("job pages: exactly one canonical, their own", (jobHtml.match(/rel="canonical"/g) || []).length === 1 && jobHtml.includes(`rel="canonical" href="${BASE}/jobs/${openJob.id}"`));
+  check("job pages: no home hero, no site-wide data, one set of share tags",
+    !jobHtml.includes("HOME-STATIC") && !jobHtml.includes('"WebSite"') && (jobHtml.match(/og:title/g) || []).length === 1
+    && (jobHtml.match(/og:image/g) || []).length === 1 && /"JobPosting"/.test(jobHtml));
+  check("job pages keep the favicon", /rel="icon" href="\/favicon.svg"/.test(jobHtml));
+
   // The admin console stays shut with a short key.
   const realAdmin = process.env.ADMIN_TOKEN;
   process.env.ADMIN_TOKEN = "short-key-123";
