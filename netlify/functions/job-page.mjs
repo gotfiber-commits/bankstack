@@ -2,7 +2,7 @@
 // Serves the app's index.html with the job's title, description, social-preview tags and canonical link
 // filled in server-side. Employer-posted jobs also get schema.org JobPosting data so they can appear in
 // Google's job search. Sourced listings don't, because they duplicate someone else's posting.
-import { db, siteUrl, BRAND, descriptionHtml } from "../lib/shared.mjs";
+import { db, siteUrl, BRAND, descriptionHtml, PAGE_HEADERS } from "../lib/shared.mjs";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -60,7 +60,7 @@ export default async (req, context) => {
 
   if (!job) {
     html = html.replace("</head>", `<meta name="robots" content="noindex">\n</head>`);
-    return new Response(html, { status: 404, headers: { "content-type": "text/html; charset=utf-8" } });
+    return new Response(html, { status: 404, headers: { ...PAGE_HEADERS, "content-type": "text/html; charset=utf-8" } });
   }
 
   const title = `${job.title} at ${job.company} · ${BRAND}`;
@@ -84,7 +84,7 @@ export default async (req, context) => {
     .replace("</head>", `${head}\n</head>`);
 
   return new Response(html, {
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=0, must-revalidate" },
+    headers: { ...PAGE_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=0, must-revalidate" },
   });
 };
 

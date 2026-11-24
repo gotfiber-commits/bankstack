@@ -7,6 +7,7 @@ import crypto from "node:crypto";
 import { db, json, fail, isEmail, isUrl, clean, siteUrl, BRAND } from "../lib/shared.mjs";
 import { checkResume, saveFile } from "../lib/files.mjs";
 import { sendEmail, layout, esc } from "../lib/email.mjs";
+import { withinLimits, LIMITS, TOO_MANY } from "../lib/limits.mjs";
 
 async function readBody(req) {
   const type = req.headers.get("content-type") || "";
@@ -40,6 +41,7 @@ export default async (req) => {
   if (resumeUrl && !isUrl(resumeUrl)) return fail("The résumé link should start with https://");
 
   const sql = db();
+  if (!(await withinLimits(sql, LIMITS.apply(req, email)))) return fail(TOO_MANY, 429);
   const [job] = await sql`
     SELECT j.id, j.title, j.company, j.employer_id, j.apply_url, e.email AS employer_email,
            COALESCE(e.notify_each_applicant, true) AS notify_employer

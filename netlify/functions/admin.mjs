@@ -4,6 +4,7 @@
 // POST /api/admin/jobs/:id/close      → take a listing down (cancels billing for a paid posting)
 // POST /api/admin/jobs/:id/reopen     → put a sourced listing back up for 30 days
 // POST /api/admin/maintenance         → run the expiry + dead-link check now
+// GET  /api/admin/traffic?days=7|30|90 → site statistics: visitors, sources, pages, locations, sign-ups
 // POST /api/admin/claims/:id/approve | reject   → { note? } decide a claim waiting for review
 // POST /api/admin/candidates/:id/nmls/verify | reject → { note? } after checking NMLS Consumer Access by hand
 import {
@@ -19,6 +20,8 @@ import { syncInstitutions } from "../lib/institutions.mjs";
 export default async (req) => {
   const auth = (req.headers.get("authorization") || "").replace(/^Bearer\s+/, "");
   if (!process.env.ADMIN_TOKEN) return fail("Set ADMIN_TOKEN to use the admin console.", 503);
+  // A short key could be guessed, so the console stays shut until it's long and random.
+  if (process.env.ADMIN_TOKEN.length < 32) return fail("ADMIN_TOKEN must be at least 32 characters. Set a long random value in Netlify.", 503);
   if (!safeEqual(auth, process.env.ADMIN_TOKEN)) return fail("Admin key not recognized.", 401);
 
   const sql = db();
@@ -108,6 +111,65 @@ export default async (req) => {
       trial_plans: plans.length - paying.length,
       billing: { plan: describePrice(price), yearly: describePrice(yearPrice), error: priceError },
       jobs, employers, messages, claims, claimable, nmls });
+  }
+
+  // Site statistics for the last 7, 30 or 90 days (Central time). Unique visitors are counted per day
+  // (the visitor code changes daily), so "visitors" over a range is the sum of each day's.
+  if (path === "/api/admin/traffic" && req.method === "GET") {
+    const days = [7, 30, 90].includes(Number(new URL(req.url).searchParams.get("days"))) ? Number(new URL(req.url).searchParams.get("days")) : 30;
+    try {
+      const [{ since }] = await sql`SELECT ((now() AT TIME ZONE 'America/Chicago')::date - ${days - 1}::int)::text AS since`;
+      const daily = await sql`
+        SELECT d::date::text AS day, COALESCE(h.visitors, 0)::int AS visitors, COALESCE(h.views, 0)::int AS views
+        FROM generate_series(${since}::date, (now() AT TIME ZONE 'America/Chicago')::date, interval '1 day') d
+        LEFT JOIN (SELECT day, COUNT(DISTINCT visitor) AS visitors, COUNT(*) AS views FROM page_hits WHERE day >= ${since}::date GROUP BY day) h
+          ON h.day = d::date
+        ORDER BY d`;
+      // A visit's source is its landing page view's referrer or campaign; visits that arrive with neither
+      // are typed in, bookmarked, or from an email app that hides where it came from.
+      const sources = await sql`
+        SELECT COALESCE(utm_source, ref_host, 'Direct, email or bookmark') AS source, COUNT(*)::int AS visits
+        FROM page_hits WHERE day >= ${since}::date AND landing GROUP BY 1 ORDER BY 2 DESC LIMIT 15`;
+      const campaigns = await sql`
+        SELECT utm_campaign AS campaign, COALESCE(utm_source, '') AS source, COUNT(*)::int AS visits
+        FROM page_hits WHERE day >= ${since}::date AND landing AND utm_campaign IS NOT NULL GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15`;
+      const pages = await sql`
+        SELECT path, COUNT(*)::int AS views, COUNT(DISTINCT (day, visitor))::int AS visitors
+        FROM page_hits WHERE day >= ${since}::date GROUP BY 1 ORDER BY 2 DESC LIMIT 15`;
+      const jobs = await sql`
+        SELECT h.job_id, j.title, j.company, COUNT(*)::int AS views
+        FROM page_hits h LEFT JOIN jobs j ON j.id = h.job_id
+        WHERE h.day >= ${since}::date AND h.path = 'job' AND h.job_id IS NOT NULL GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 10`;
+      const states = await sql`
+        SELECT COALESCE(region, 'Unknown') AS region, COALESCE(country, '?') AS country, COUNT(DISTINCT (day, visitor))::int AS visitors
+        FROM page_hits WHERE day >= ${since}::date GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 15`;
+      const cities = await sql`
+        SELECT city, region, country, COUNT(DISTINCT (day, visitor))::int AS visitors
+        FROM page_hits WHERE day >= ${since}::date AND city IS NOT NULL GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 15`;
+      const devices = await sql`
+        SELECT device, COUNT(DISTINCT (day, visitor))::int AS visitors FROM page_hits WHERE day >= ${since}::date GROUP BY 1 ORDER BY 2 DESC`;
+      const [conv] = await sql`SELECT
+          (SELECT COUNT(*) FROM employers WHERE verified_at IS NOT NULL AND (created_at AT TIME ZONE 'America/Chicago')::date >= ${since}::date)::int AS employer_signups,
+          (SELECT COUNT(*) FROM candidates WHERE (created_at AT TIME ZONE 'America/Chicago')::date >= ${since}::date)::int AS candidate_signups,
+          (SELECT COUNT(*) FROM applications WHERE (created_at AT TIME ZONE 'America/Chicago')::date >= ${since}::date)::int AS applications,
+          (SELECT COUNT(*) FROM jobs WHERE employer_id IS NOT NULL AND (posted_at AT TIME ZONE 'America/Chicago')::date >= ${since}::date)::int AS postings`;
+      const signups = await sql`
+        SELECT company, email, contact_name, contact_title, created_at, signup_source
+        FROM employers WHERE verified_at IS NOT NULL AND (created_at AT TIME ZONE 'America/Chicago')::date >= ${since}::date
+        ORDER BY created_at DESC LIMIT 50`;
+      const candidateSources = await sql`
+        SELECT COALESCE(signup_source->>'utm_source', signup_source->>'ref', 'Direct, email or bookmark') AS source, COUNT(*)::int AS signups
+        FROM candidates WHERE (created_at AT TIME ZONE 'America/Chicago')::date >= ${since}::date GROUP BY 1 ORDER BY 2 DESC LIMIT 10`;
+      const totals = {
+        visitors: daily.reduce((a, d) => a + d.visitors, 0),
+        views: daily.reduce((a, d) => a + d.views, 0),
+        visits: sources.reduce((a, d) => a + d.visits, 0),
+      };
+      return json({ days, totals, daily, sources, campaigns, pages, jobs, states, cities, devices, conversions: conv, signups, candidate_sources: candidateSources });
+    } catch (err) {
+      if (/page_hits|signup_source|traffic_salts/.test(String(err.message))) return fail("Run the latest db/schema.sql in Neon to turn on site statistics.", 503);
+      throw err;
+    }
   }
 
   if (req.method !== "POST") return fail("Method not allowed", 405);

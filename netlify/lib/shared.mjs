@@ -43,10 +43,41 @@ export function stripe() {
 
 export const BRAND = "BankJobz";
 
+// ---------- security headers ----------
+// Netlify applies netlify.toml headers only to static files, never to function responses, so the
+// functions send their own: API answers get a locked-down policy, and the HTML pages functions
+// render (job pages, the bank directory) get the same policy as the static site.
+// tests/e2e.mjs checks that netlify.toml matches PAGE_HEADERS and that BOOT_SCRIPT_HASH is the
+// hash of the one inline script in public/index.html.
+export const BOOT_SCRIPT_HASH = "sha256-AfRTlx4O+/VBW4tsCKPtAabjVmp/PJ1jWugOusnIrAU=";
+export const PAGE_CSP = [
+  "default-src 'self'",
+  `script-src 'self' '${BOOT_SCRIPT_HASH}'`,
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' https://fonts.gstatic.com",
+  "img-src 'self' data: blob:",
+  "connect-src 'self'",
+  "frame-src 'none'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "object-src 'none'",
+].join("; ");
+export const BASE_HEADERS = {
+  "strict-transport-security": "max-age=31536000; includeSubDomains",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "x-frame-options": "DENY",
+  "permissions-policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+  "cross-origin-opener-policy": "same-origin",
+};
+export const PAGE_HEADERS = { ...BASE_HEADERS, "content-security-policy": PAGE_CSP };
+export const API_HEADERS = { ...BASE_HEADERS, "content-security-policy": "default-src 'none'; frame-ancestors 'none'" };
+
 export const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json", "cache-control": "no-store" },
+    headers: { ...API_HEADERS, "content-type": "application/json", "cache-control": "no-store" },
   });
 
 export const fail = (message, status = 400) => json({ error: message }, status);
@@ -118,7 +149,7 @@ export function safeEqual(a, b) {
 }
 
 export function redirect(location, status = 303) {
-  return new Response(null, { status, headers: { location } });
+  return new Response(null, { status, headers: { ...BASE_HEADERS, location } });
 }
 
 // Resolves the signed-in employer from "Authorization: Bearer <session token>" (bss_…).

@@ -4,8 +4,10 @@
 // POST /api/candidate-auth/verify  { token } → { token: ck_…, name, has_resume }
 import { db, json, fail, isEmail, clean, siteUrl, randomToken, sha256 } from "../lib/shared.mjs";
 import { sendEmail, layout, esc } from "../lib/email.mjs";
+import { signupSource } from "../lib/traffic.mjs";
+import { withinLimits, LIMITS, TOO_MANY } from "../lib/limits.mjs";
 
-export default async (req) => {
+export default async (req, context) => {
   if (req.method !== "POST") return fail("Method not allowed", 405);
   let body;
   try { body = await req.json(); } catch { return fail("Send JSON."); }
@@ -16,9 +18,11 @@ export default async (req) => {
     if (clean(body.company_website)) return json({ ok: true }); // honeypot
     const email = clean(body.email, 200).toLowerCase();
     if (!isEmail(email)) return fail("Enter a valid email address.");
+    if (!(await withinLimits(sql, LIMITS.candidateMail(req, email)))) return fail(TOO_MANY, 429);
     const name = clean(body.name, 120);
+    const source = signupSource(req, context, body.source);
     const [cand] = await sql`
-      INSERT INTO candidates (email, name) VALUES (${email}, ${name})
+      INSERT INTO candidates (email, name, signup_source) VALUES (${email}, ${name}, ${source ? JSON.stringify(source) : null}::jsonb)
       ON CONFLICT (email) DO UPDATE
         SET name = CASE WHEN candidates.name = '' THEN EXCLUDED.name ELSE candidates.name END
       RETURNING id, name`;

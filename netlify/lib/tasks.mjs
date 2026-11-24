@@ -113,7 +113,18 @@ export async function pruneAuth() {
   const devices = await sql`DELETE FROM employer_devices WHERE expires_at < now() RETURNING id`;
   const usage = await sql`DELETE FROM ai_usage WHERE created_at < now() - interval '30 days' RETURNING id`;
   const contact = await sql`DELETE FROM contact_messages WHERE created_at < now() - interval '365 days' RETURNING id`;
-  return { challenges: challenges.length, sessions: sessions.length, devices: devices.length, ai_usage: usage.length, contact: contact.length };
+  // Rate-limit counters: the longest window is a day, so anything two days old is finished.
+  let limits = [];
+  try { limits = await sql`DELETE FROM rate_limits WHERE window_start < now() - interval '2 days' RETURNING key`; }
+  catch { /* rate_limits not migrated yet */ }
+  // Site statistics: salts after two days (so a day's visitor codes can't be linked to anything), and
+  // page views after 13 months.
+  let hits = [];
+  try {
+    await sql`DELETE FROM traffic_salts WHERE day < (now() AT TIME ZONE 'America/Chicago')::date - 1`;
+    hits = await sql`DELETE FROM page_hits WHERE day < (now() AT TIME ZONE 'America/Chicago')::date - 400 RETURNING id`;
+  } catch { /* statistics tables not migrated yet */ }
+  return { challenges: challenges.length, sessions: sessions.length, devices: devices.length, ai_usage: usage.length, contact: contact.length, rate_limits: limits.length, page_hits: hits.length };
 }
 
 export { siteUrl };

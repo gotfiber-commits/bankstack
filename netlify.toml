@@ -5,9 +5,17 @@
 [functions]
   node_bundler = "esbuild"
 
+# Security headers for the static site (index.html, app.js, app.css, privacy and terms).
+# Netlify doesn't apply these to function responses, so the functions send the same set
+# themselves (PAGE_HEADERS and API_HEADERS in netlify/lib/shared.mjs). The tests check the two
+# match, and that the script hash below is the hash of the inline script in public/index.html.
 [[headers]]
   for = "/*"
   [headers.values]
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
     X-Content-Type-Options = "nosniff"
     Referrer-Policy = "strict-origin-when-cross-origin"
     X-Frame-Options = "DENY"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=(), usb=()"
+    Cross-Origin-Opener-Policy = "same-origin"
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'sha256-AfRTlx4O+/VBW4tsCKPtAabjVmp/PJ1jWugOusnIrAU='; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; frame-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'"

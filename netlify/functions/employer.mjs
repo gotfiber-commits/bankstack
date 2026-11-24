@@ -15,11 +15,12 @@
 // POST /api/employer/billing                  → Stripe billing portal (cards, invoices)
 import {
   db, stripe, json, fail, siteUrl, employerFromRequest, syncJobFromSubscription,
-  validateJob, APPLICATION_STATUSES, clean, normalizeName, INSTITUTION_TYPES,
+  validateJob, APPLICATION_STATUSES, clean, normalizeName, INSTITUTION_TYPES, API_HEADERS,
 } from "../lib/shared.mjs";
 import { CORE_SYSTEMS, LICENSES } from "../lib/banking.mjs";
 import { loadFile } from "../lib/files.mjs";
 import { sendEmail, layout, esc } from "../lib/email.mjs";
+import { withinLimits, LIMITS, TOO_MANY } from "../lib/limits.mjs";
 import {
   hashPassword, verifyPassword, passwordProblem, newTotpSecret, otpauthUrl, verifyTotp, newRecoveryCodes,
   emailTag, passwordKeys, reserveAttempt, attemptPassed, clearAttempts,
@@ -268,6 +269,7 @@ export default async (req) => {
       .map(cell).join(",")).join("\r\n");
     return new Response("﻿" + header.join(",") + "\r\n" + body + (body ? "\r\n" : ""), {
       headers: {
+        ...API_HEADERS,
         "content-type": "text/csv; charset=utf-8",
         "content-disposition": `attachment; filename="bankjobz-applicants-${new Date().toISOString().slice(0, 10)}.csv"`,
         "cache-control": "private, no-store",
@@ -361,6 +363,7 @@ export default async (req) => {
       const [cand] = await sql`SELECT * FROM candidates WHERE id = ${inviteMatch[1]} AND pool_visible`;
       if (!cand || blockedFrom(cand, employer.company)) return fail("This candidate isn't available.", 404);
       const note = clean(b.note, 1000);
+      if (!(await withinLimits(sql, LIMITS.invite(employer.id)))) return fail(TOO_MANY, 429);
       const rows = await sql`
         INSERT INTO invites (employer_id, candidate_id, job_id, note)
         VALUES (${employer.id}, ${cand.id}, ${job.id}, ${note || null})
@@ -420,10 +423,10 @@ export default async (req) => {
       const name = (app.resume_name || "resume").replace(/"/g, "");
       return new Response(file.data, {
         headers: {
+          ...API_HEADERS,
           "content-type": app.resume_type || "application/octet-stream",
           "content-disposition": `attachment; filename="${name}"`,
           "cache-control": "private, no-store",
-          "x-content-type-options": "nosniff",
         },
       });
     }

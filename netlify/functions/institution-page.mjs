@@ -3,7 +3,7 @@
 //   GET /banks/:state     → every institution in a state (slug is the 2-letter code)
 //   GET /banks/:slug      → one institution: facts from FDIC/NCUA data + its open jobs
 // Every page is plain HTML with real links, which is exactly what Google wants to crawl.
-import { db, siteUrl, BRAND } from "../lib/shared.mjs";
+import { db, siteUrl, BRAND, PAGE_HEADERS } from "../lib/shared.mjs";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -88,7 +88,7 @@ ${body}
 </html>`;
   return new Response(html, {
     status,
-    headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=3600" },
+    headers: { ...PAGE_HEADERS, "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=3600" },
   });
 }
 

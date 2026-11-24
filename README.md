@@ -107,6 +107,15 @@ Paste the whole of `db/schema.sql` into the Neon SQL Editor and click Run — it
 8. **Go live**: switch Stripe to live keys, update `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`, redeploy, then create the plan from `/#admin` → Billing setup in live mode. Submit `https://YOUR-SITE/sitemap.xml` in Google Search Console.
 9. **Load the directory**: open `/#admin` and click "Load the institution directory". Resubmit the sitemap afterwards so Google finds the ~8,500 new institution pages.
 
+## Security
+
+- **Headers**: every page and API answer carries HSTS, a Content-Security-Policy, `nosniff`, no framing, a Permissions-Policy and COOP. Static files get them from `netlify.toml`, function responses from `PAGE_HEADERS` / `API_HEADERS` in `netlify/lib/shared.mjs` (Netlify doesn't add `netlify.toml` headers to functions). The two must match; the tests check.
+- **The one inline script** in `public/index.html` is allowed by its SHA-256 hash. If you edit it, recompute the hash and update `BOOT_SCRIPT_HASH` and `netlify.toml` (the tests fail until you do):
+  `node -e 'const s=require("fs").readFileSync("public/index.html","utf8").match(/<script>([\s\S]*?)<\/script>/)[1];console.log("sha256-"+require("crypto").createHash("sha256").update(s).digest("base64"))'`
+- **Rate limits** (`netlify/lib/limits.mjs`) on everything that emails someone: sign-in and reset links, alert confirmations, applications, invites. Counters are keyed by hashes, never by address or IP, and pruned daily.
+- **Secrets** live only in Netlify environment variables. `ADMIN_TOKEN` must be at least 32 random characters (`openssl rand -hex 32`).
+- **HSTS preload** (optional, later): once every subdomain is on HTTPS for good, you can add `preload` to the HSTS header and submit the domain at hstspreload.org. It's hard to undo, so it's left off.
+
 ## Running locally
 
 ```bash

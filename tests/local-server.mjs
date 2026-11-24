@@ -16,8 +16,17 @@ function compile(pattern) {
   return { regex: new RegExp(`^${re}/?$`), names };
 }
 
+// The [[headers]] for "/*" in netlify.toml, applied to static files the way Netlify does (and not to
+// function responses, which Netlify leaves alone), so the browser test runs under the real CSP.
+export async function staticHeaders() {
+  const toml = await readFile(path.join(root, "netlify.toml"), "utf8");
+  const block = toml.split("[headers.values]")[1] || "";
+  return Object.fromEntries([...block.matchAll(/^\s*([A-Za-z-]+)\s*=\s*"([^"]*)"\s*$/gm)].map((m) => [m[1], m[2]]));
+}
+
 export async function startLocalServer(port = 8899) {
   const routes = [];
+  const securityHeaders = await staticHeaders();
   const dir = path.join(root, "netlify/functions");
   for (const file of (await readdir(dir)).filter((f) => f.endsWith(".mjs"))) {
     const mod = await import(pathToFileURL(path.join(dir, file)).href);
@@ -53,7 +62,7 @@ export async function startLocalServer(port = 8899) {
       let file = path.join(root, "public", url.pathname === "/" ? "index.html" : url.pathname);
       if (!file.startsWith(path.join(root, "public"))) throw Object.assign(new Error("bad path"), { code: "ENOENT" });
       if ((await stat(file)).isDirectory()) file = path.join(file, "index.html");
-      res.writeHead(200, { "content-type": TYPES[path.extname(file)] || "application/octet-stream" });
+      res.writeHead(200, { ...securityHeaders, "content-type": TYPES[path.extname(file)] || "application/octet-stream" });
       res.end(await readFile(file));
     } catch (err) {
       if (err.code === "ENOENT") { res.writeHead(404, { "content-type": "text/plain" }); res.end("Not found"); return; }

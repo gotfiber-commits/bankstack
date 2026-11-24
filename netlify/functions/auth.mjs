@@ -27,6 +27,8 @@ import {
   newLinkSecret, claimLink, peekLink,
 } from "../lib/auth.mjs";
 import { sendEmail, layout, esc } from "../lib/email.mjs";
+import { signupSource } from "../lib/traffic.mjs";
+import { withinLimits, LIMITS, TOO_MANY } from "../lib/limits.mjs";
 
 const CODE_FAIL = "That code isn't right, or it has expired. Check it, or start again for a new one.";
 const LOCKED = `Too many attempts. For your security, sign-in for this email is paused for ${LOCK_MINUTES} minutes.`;
@@ -140,7 +142,7 @@ async function applyReset(sql, req, employer, password) {
   await securityNotice(employer.email, "Your password was changed");
 }
 
-export default async (req) => {
+export default async (req, context) => {
   if (req.method !== "POST") return fail("Method not allowed", 405);
   const path = new URL(req.url).pathname.replace(/\/+$/, "");
   const sql = db();
@@ -169,6 +171,8 @@ export default async (req) => {
     if (!isEmail(email)) return fail("Enter a valid work email.");
     const problem = passwordProblem(b.password, email);
     if (problem) return fail(problem);
+    // Same limit for new, unconfirmed and existing emails, so a 429 says nothing about accounts.
+    if (!(await withinLimits(sql, LIMITS.employerMail(req, email)))) return fail(TOO_MANY, 429);
 
     // The account's details and password take effect only when this sign-up's code is entered,
     // so a second sign-up for the same unconfirmed email can't change anything.
@@ -195,7 +199,11 @@ export default async (req) => {
         : await sql`INSERT INTO employers (company, email, institution_type, contact_name, contact_title)
                     VALUES (${company}, ${email}, ${type}, ${contactName}, ${details.contact_title})
                     ON CONFLICT (email) DO UPDATE SET email = EXCLUDED.email RETURNING *`;
-      const [employer] = await sql`UPDATE employers SET pending_salt = COALESCE(pending_salt, ${newSalt()})
+      // Where the sign-up came from (referring site or campaign, approximate city and state): kept
+      // from the first sign-up attempt only.
+      const source = signupSource(req, context, b.source);
+      const [employer] = await sql`UPDATE employers SET pending_salt = COALESCE(pending_salt, ${newSalt()}),
+                                     signup_source = COALESCE(signup_source, ${source ? JSON.stringify(source) : null}::jsonb)
                                    WHERE id = ${row.id} RETURNING *`;
       const pending = { ...details, password_hash: hashPassword(b.password, employer.pending_salt) };
       challenge = await startEmailChallenge(sql, req, { employer, email, purpose: "verify", pending });
@@ -354,6 +362,7 @@ export default async (req) => {
   if (path === "/api/auth/forgot") {
     const email = clean(b.email, 200).toLowerCase();
     if (!isEmail(email)) return fail("Enter a valid email address.");
+    if (!(await withinLimits(sql, LIMITS.employerMail(req, email)))) return fail(TOO_MANY, 429);
     const [employer] = await sql`SELECT * FROM employers WHERE email = ${email}`;
     const challenge = await startEmailChallenge(sql, req, { employer: employer || null, email, purpose: "reset" });
     await minDuration(startedAt);

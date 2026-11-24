@@ -7,12 +7,13 @@
 // POST /api/candidate/save      → bookmark a job { job_id, saved: true|false }
 // POST /api/candidate/apply     → one-click apply { job_id, cover_note? }
 import crypto from "node:crypto";
-import { db, json, fail, clean, isUrl, siteUrl, candidateFromRequest, CATEGORIES } from "../lib/shared.mjs";
+import { db, json, fail, clean, isUrl, siteUrl, candidateFromRequest, CATEGORIES, API_HEADERS } from "../lib/shared.mjs";
 import { cleanCoreSystems, cleanLicenses, detectBankingBackground } from "../lib/banking.mjs";
 import { checkResume, saveFile, loadFile } from "../lib/files.mjs";
 import { extractResumeText } from "../lib/extract.mjs";
 import { rankJobs } from "../lib/match.mjs";
 import { sendEmail, layout, esc } from "../lib/email.mjs";
+import { withinLimits, LIMITS, TOO_MANY } from "../lib/limits.mjs";
 
 const MODES = ["any", "onsite", "hybrid", "remote"];
 
@@ -121,6 +122,7 @@ export default async (req) => {
     if (!file) return fail("The résumé file is missing.", 404);
     return new Response(file.data, {
       headers: {
+        ...API_HEADERS,
         "content-type": me.resume_type || "application/octet-stream",
         "content-disposition": `attachment; filename="${(me.resume_name || "resume").replace(/"/g, "")}"`,
         "cache-control": "private, no-store",
@@ -174,6 +176,7 @@ export default async (req) => {
     try { b = await req.json(); } catch { return fail("Send JSON."); }
     const jobId = String(b.job_id || "");
     if (!/^\d+$/.test(jobId)) return fail("Pick a job to apply for.");
+    if (!(await withinLimits(sql, LIMITS.quickApply(me.id)))) return fail(TOO_MANY, 429);
     const [job] = await sql`
       SELECT j.id, j.title, j.company, j.employer_id, j.apply_url, e.email AS employer_email,
              COALESCE(e.notify_each_applicant, true) AS notify_employer

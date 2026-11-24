@@ -8,14 +8,22 @@
 <meta name="description" content="Jobs at banks and credit unions: branch, lending, operations, compliance, technology and more. Employers post up to 5 jobs for $99 a month.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<!-- Fonts load without holding up the first paint; text shows in the fallback font for a moment, then swaps. -->
-<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..900&family=IBM+Plex+Mono:wght@400;500&family=Source+Sans+3:wght@400;600;700&display=swap" onload="this.onload=null;this.rel='stylesheet'">
-<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..900&family=IBM+Plex+Mono:wght@400;500&family=Source+Sans+3:wght@400;600;700&display=swap"></noscript>
 <link rel="stylesheet" href="/app.css">
 <link rel="preload" as="fetch" href="/api/jobs" crossorigin="anonymous">
+<noscript><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..900&amp;family=IBM+Plex+Mono:wght@400;500&amp;family=Source+Sans+3:wght@400;600;700&amp;display=swap"></noscript>
+<!-- The only inline script. The Content-Security-Policy allows it by its SHA-256 hash (netlify/lib/shared.mjs
+     and netlify.toml), so any edit here needs the hash updated there too: the tests check they match. -->
 <script>
   // Before the app script arrives: show the home page's navy band on the home page, a blank page elsewhere.
-  (function () { var h = location.hash.replace(/^#/, ""); document.documentElement.setAttribute("data-boot", (!h || h === "home") && !/^\/jobs\//.test(location.pathname) ? "home" : "page"); })();
+  // Then load the web fonts without holding up the first paint (text shows in the fallback font, then swaps).
+  (function () {
+    var h = location.hash.replace(/^#/, "");
+    document.documentElement.setAttribute("data-boot", (!h || h === "home") && !/^\/jobs\//.test(location.pathname) ? "home" : "page");
+    var f = document.createElement("link");
+    f.rel = "stylesheet";
+    f.href = "https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@100..125,500..900&family=IBM+Plex+Mono:wght@400;500&family=Source+Sans+3:wght@400;600;700&display=swap";
+    document.head.appendChild(f);
+  })();
 </script>
 </head>
 <body>

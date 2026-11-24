@@ -61,6 +61,23 @@ try {
   await emp.waitForSelector(".home-hero h1");
   check("headline shows", (await emp.textContent(".home-hero h1")).includes("banks and credit unions"));
   check("live figures come from the database", (await emp.textContent(".figures-grid strong")) === String(SEED_LEN));
+  // The Content-Security-Policy is live (served from netlify.toml): the boot script ran, the web fonts
+  // loaded through it, and a script injected into the page is refused.
+  const csp = await emp.evaluate(async () => {
+    await document.fonts.ready;
+    const blocked = new Promise((res) => {
+      document.addEventListener("securitypolicyviolation", (e) => res(e.violatedDirective), { once: true });
+      setTimeout(() => res(null), 1500);
+    });
+    const el = document.createElement("script");
+    el.textContent = "window.__injected = true";
+    document.body.appendChild(el);
+    return { violated: await blocked, injected: !!window.__injected, boot: document.documentElement.getAttribute("data-boot"),
+      fontsLink: !!document.querySelector('link[rel=stylesheet][href*="fonts.googleapis.com"]') };
+  });
+  check("CSP: the hashed boot script runs and loads the web fonts", csp.boot === "home" && csp.fontsLink, csp);
+  check("CSP: an injected inline script is blocked", csp.injected === false && /script-src/.test(csp.violated || ""), csp);
+  pageErrors.length = 0; // that refusal is logged as a console error on purpose
   await shot(emp, "01-home");
   await emp.click("text=View current positions");
   await emp.waitForSelector(".ledger li");
@@ -526,7 +543,7 @@ try {
   section("Admin console");
   const adm = await newPage();
   await adm.goto(BASE + "/#admin");
-  await adm.fill("#ad-key", "admin_e2e_token");
+  await adm.fill("#ad-key", "admin_e2e_token_0123456789abcdef0123");
   await adm.click("text=Open console");
   await adm.waitForSelector(".admin-figures");
   check("admin figures show $159.99 MRR from one plan with 6 postings", (await adm.textContent(".admin-figures strong")) === "$159.99"
@@ -712,6 +729,36 @@ try {
   check("a page built from the job list shows a placeholder, footer below the fold, until the list arrives", jfoot);
   await slowJobs.waitForSelector("#job-list li, .job-list li, .job-row, [data-job]", { timeout: 6000 }).catch(() => {});
   check("…then the list draws", await slowJobs.locator(".boot-wait").count() === 0);
+
+  section("Site statistics");
+  const REAL_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
+  await stack.sql`DELETE FROM page_hits`;
+  const visitorPage = await newPage({ userAgent: REAL_UA });
+  await visitorPage.goto(BASE + "/?utm_source=email&utm_medium=outreach&utm_campaign=hr-intro-nov#home");
+  await visitorPage.waitForSelector(".home-hero h1");
+  await visitorPage.click('a[href="#jobs"] >> nth=0');
+  await visitorPage.waitForSelector(".boot-wait, #jobs-list, .job-list, .results", { timeout: 5000 }).catch(() => {});
+  await visitorPage.waitForTimeout(600);
+  const views = await stack.sql`SELECT path, landing, utm_source, utm_campaign, device FROM page_hits ORDER BY id`;
+  check("a real visit sends one view per page, the first carrying its campaign", views.length === 2 && views[0].path === "home" && views[0].landing
+    && views[0].utm_campaign === "hr-intro-nov" && views[1].path === "jobs" && !views[1].landing, views);
+  check("no cookies are set", (await visitorPage.context().cookies()).length === 0);
+  const gpcPage = await newPage({ userAgent: REAL_UA });
+  await gpcPage.addInitScript(() => { Object.defineProperty(Navigator.prototype, "globalPrivacyControl", { get: () => true }); });
+  await gpcPage.goto(BASE + "/#jobs");
+  await gpcPage.waitForTimeout(800);
+  check("a browser sending Global Privacy Control isn't counted", (await stack.sql`SELECT COUNT(*)::int AS n FROM page_hits`)[0].n === 2);
+  const admPageViews = (await stack.sql`SELECT COUNT(*)::int AS n FROM page_hits`)[0].n;
+  await adm.reload();
+  await adm.waitForSelector("#admin-traffic .traffic-figures", { timeout: 8000 });
+  const trafficText = await adm.textContent("#admin-traffic");
+  check("admin console: Site traffic with visitors, sources and the campaign", trafficText.includes("Where visitors come from") && trafficText.includes("hr-intro-nov")
+    && trafficText.includes("page views") && trafficText.includes("How to see which emails and ads work"));
+  check("the site owner's own console visits aren't counted", (await stack.sql`SELECT COUNT(*)::int AS n FROM page_hits`)[0].n === admPageViews);
+  await adm.click('#admin-traffic [data-days="7"]');
+  await adm.waitForSelector('#admin-traffic [data-days="7"][aria-pressed="true"]');
+  check("the range switches to 7 days", (await adm.textContent("#admin-traffic .traffic-axis")).length > 0);
+  await shot(adm, "23-admin-traffic");
 
   section("Pay-transparency check on the post form");
   const ptKey = await employerToken("pat@paycheck.test", "Paycheck Savings Bank");

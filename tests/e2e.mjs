@@ -16,7 +16,7 @@ Object.assign(process.env, {
   DATABASE_URL: DB_URL, DB_DRIVER: "pg", URL: BASE,
   STRIPE_SECRET_KEY: "sk_test_e2e", STRIPE_WEBHOOK_SECRET: "whsec_e2e_secret",
   STRIPE_API_HOST: "localhost", STRIPE_API_PORT: String(STRIPE_PORT), STRIPE_API_PROTOCOL: "http",
-  ADMIN_TOKEN: "admin_e2e_token", LOCAL_BLOBS_DIR: mkdtempSync(path.join(os.tmpdir(), "bankstack-blobs-")),
+  ADMIN_TOKEN: "admin_e2e_token_0123456789abcdef0123", LOCAL_BLOBS_DIR: mkdtempSync(path.join(os.tmpdir(), "bankstack-blobs-")),
   FDIC_API_BASE: `http://localhost:${REGISTRY_PORT}`, NCUA_API_BASE: `http://localhost:${REGISTRY_PORT}`,
   AUTH_MIN_MS: "150",
   ANTHROPIC_API_KEY: "sk-ant-test-e2e", ANTHROPIC_API_BASE: `http://localhost:${AI_PORT}`,
@@ -449,7 +449,7 @@ try {
   await clearThrottle("pat@prairie.test");
 
   // C: a wrong password takes the same time whether the email is unconfirmed (many sign-ups), confirmed or unknown.
-  for (let i = 0; i < 10; i++) await call("POST", "/api/auth/signup", { body: { contact_name: "Pend", company: "Pend Bank", email: "intake@pendbank.test", password: `Pending-Pass-${i}-abc` } });
+  for (let i = 0; i < 10; i++) await call("POST", "/api/auth/signup", { ip: `192.0.2.${100 + i}`, body: { contact_name: "Pend", company: "Pend Bank", email: "intake@pendbank.test", password: `Pending-Pass-${i}-abc` } });
   // Five tries each, compared by the middle one, so a busy test machine doesn't cause a false alarm.
   const timeIt = async (email) => { const t = []; for (let i = 0; i < 5; i++) { const s0 = Date.now(); await call("POST", "/api/auth/login", { ip: `192.0.2.${i}`, body: { email, password: "Wrong-Password-xyz" } }); t.push(Date.now() - s0); } return t.sort((a, b) => a - b)[2]; };
   // With a response floor above the real work (production uses 1.2 s), every answer takes the floor.
@@ -464,9 +464,9 @@ try {
   await clearThrottle("pat@prairie.test");
 
   // Decoys behave exactly like real challenges.
-  r = await call("POST", "/api/auth/signup", { body: { contact_name: "X", company: "X", email: "pat@prairie.test", password: "Some-Other-Pass-99" } });
+  r = await call("POST", "/api/auth/signup", { ip: "198.51.100.200", body: { contact_name: "X", company: "X", email: "pat@prairie.test", password: "Some-Other-Pass-99" } });
   const decoyCh = r.data.challenge;
-  r = await call("POST", "/api/auth/forgot", { body: { email: "pat@prairie.test" } });
+  r = await call("POST", "/api/auth/forgot", { ip: "198.51.100.200", body: { email: "pat@prairie.test" } });
   const realResetCh = r.data.challenge;
   const decoyVerify = await call("POST", "/api/auth/verify", { body: { challenge: decoyCh, code: "000000" } });
   const realLogin = await call("POST", "/api/auth/login", { body: { email: "pat@prairie.test", password: attackPW } });
@@ -554,9 +554,9 @@ try {
   check("the public plan says it isn't configured yet", r.status === 200 && r.data.configured === false);
   r = await call("POST", "/api/admin/billing/plan", { body: { extra_dollars: 15 } });
   check("only the admin can set up billing", r.status === 401);
-  r = await call("POST", "/api/admin/billing/plan", { token: "admin_e2e_token", body: { extra_dollars: 0.5 } });
+  r = await call("POST", "/api/admin/billing/plan", { token: "admin_e2e_token_0123456789abcdef0123", body: { extra_dollars: 0.5 } });
   check("a silly per-posting amount is refused", r.status === 400, r.data);
-  r = await call("POST", "/api/admin/billing/plan", { token: "admin_e2e_token", body: { extra_dollars: 15 } });
+  r = await call("POST", "/api/admin/billing/plan", { token: "admin_e2e_token_0123456789abcdef0123", body: { extra_dollars: 15 } });
   check("admin creates the plan price in Stripe", r.status === 200 && r.data.plan.base_cents === 9900 && r.data.plan.base_limit === 5
     && r.data.plan.plus_cents === 15999 && r.data.plan.plus_limit === 10 && r.data.plan.extra_cents === 1500, r.data);
   const planPriceId = r.data.plan.price_id;
@@ -1140,7 +1140,7 @@ try {
 
   // ================================================================
   section("Banking-native filters: core systems and licenses");
-  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token_0123456789abcdef0123", body: {
     ...jobFields, title: "Consumer Loan Officer", category: "lending-credit", company: "Muscle Shoals National Bank",
     source_url: `${BASE}/app.css`, source_name: "Test",
     core_systems: ["jack-henry-silverlake", "bogus-core"], licenses: ["nmls", "fake-license"] } });
@@ -1202,7 +1202,7 @@ try {
   check("…and other job pages don't", !String(r.data).includes("experienceRequirements"));
   r = await call("PUT", `/api/employer/jobs/${gradJob}`, { token: keyA, body: { ...jobFields, title: "Graduate Analyst" } });
   check("unticking the box on edit takes it off the new-grad list", r.status === 200 && (await call("GET", `/api/jobs/${gradJob}`)).data.entry_level === false);
-  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token_0123456789abcdef0123", body: {
     ...jobFields, title: "Universal Banker I", category: "branch-retail", company: "Cherokee Bank", source_url: `${BASE}/terms.html`, source_name: "Test" } });
   check("a sourced listing the admin adds is tagged from its title", r.status === 201 && (await call("GET", `/api/jobs/${r.data.id}`)).data.entry_level === true);
 
@@ -1354,7 +1354,7 @@ try {
   section("Admin console and maintenance");
   r = await call("GET", "/api/admin");
   check("admin needs the admin key", r.status === 401);
-  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token_0123456789abcdef0123" });
   const livePlans = await sql`SELECT e.id, (SELECT COUNT(*)::int FROM jobs j WHERE j.employer_id = e.id AND j.status = 'open') AS n
     FROM employers e WHERE e.plan_status IN ('active', 'past_due', 'trialing') AND NOT e.plan_cancel_at_period_end`;
   const expectMrr = livePlans.reduce((t, e) => t + fakeStripe.amountFor(fakeStripe.prices.get(planPriceId), Math.max(1, e.n)), 0);
@@ -1365,16 +1365,16 @@ try {
     && r.data.live_plans === livePlans.length && r.data.billing.plan.extra_cents === 1500
     && r.data.employer_count === (await sql`SELECT COUNT(*)::int n FROM employers WHERE verified_at IS NOT NULL`)[0].n, {
       paid_live: r.data.paid_live, mrr: r.data.mrr_cents, unpaid: r.data.unpaid, employers: r.data.employer_count });
-  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token_0123456789abcdef0123", body: {
     ...jobFields, title: "BSA Analyst", category: "risk-compliance", company: "Gone Bank", source_url: `${BASE}/no-such-posting`, source_name: "Test" } });
   const goneId = r.data.id;
   check("admin adds a sourced listing", r.status === 201);
-  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token_0123456789abcdef0123", body: {
     ...jobFields, title: "Staff Accountant", category: "finance-accounting", company: "Live Bank", source_url: `${BASE}/index.html` } });
   const liveId = r.data.id;
-  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: { ...jobFields, company: "Live Bank", source_url: `${BASE}/index.html` } });
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token_0123456789abcdef0123", body: { ...jobFields, company: "Live Bank", source_url: `${BASE}/index.html` } });
   check("duplicate source link is refused", r.status === 409);
-  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token_0123456789abcdef0123", body: {
     ...jobFields, title: "Teller II", company: "Agg Bank", source_url: "https://www.tealhq.com/job/teller-ii_abc123" } });
   check("a third-party job-board link is refused outright", r.status === 400 && /third-party/.test(r.data.error), r.data);
   const [{ id: aggId }] = await sql`
@@ -1388,7 +1388,7 @@ try {
   check("the daily check closes aggregator-hosted leftovers without even fetching",
     r.aggregator === 1 && r.closed.includes(aggId)
     && (await sql`SELECT status FROM jobs WHERE id = ${aggId}`)[0].status === "closed", r);
-  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token", body: {
+  r = await call("POST", "/api/admin/jobs", { token: "admin_e2e_token_0123456789abcdef0123", body: {
     ...jobFields, title: "Senior Teller", category: "branch-retail", company: "Soft Gone Bank", source_url: `${BASE}/test/gone-posting`, source_name: "Test" } });
   const softId = r.data.id;
   await sql`UPDATE jobs SET last_checked_at = now() WHERE id NOT IN (${goneId}, ${liveId}, ${softId})`;
@@ -1397,10 +1397,10 @@ try {
   check("dead-link check closes a removed posting", r.closed.includes(goneId) && statuses[goneId] === "closed", r);
   check("…and a page that loads but says the job is gone", r.closed.includes(softId) && statuses[softId] === "closed", r);
   check("…and leaves a working one open", statuses[liveId] === "open");
-  r = await call("POST", `/api/admin/jobs/${goneId}/reopen`, { token: "admin_e2e_token" });
+  r = await call("POST", `/api/admin/jobs/${goneId}/reopen`, { token: "admin_e2e_token_0123456789abcdef0123" });
   check("admin can reopen a sourced listing", r.status === 200 && (await sql`SELECT status FROM jobs WHERE id = ${goneId}`)[0].status === "open");
   const subB = (await sql`SELECT plan_subscription_id FROM employers WHERE email = 'jobs@tvcu.test'`)[0].plan_subscription_id;
-  r = await call("POST", `/api/admin/jobs/${jobB}/close`, { token: "admin_e2e_token" });
+  r = await call("POST", `/api/admin/jobs/${jobB}/close`, { token: "admin_e2e_token_0123456789abcdef0123" });
   const takenDown = (await sql`SELECT status, closed_by FROM jobs WHERE id = ${jobB}`)[0];
   check("admin take-down of a plan posting closes it and keeps the plan's count right", r.status === 200 && takenDown.status === "closed"
     && takenDown.closed_by === "admin" && fakeStripe.subs.get(subB).status === "active"
@@ -1467,7 +1467,7 @@ try {
   r = await call("POST", "/api/contact", { body: { ...contactMsg, email: "same@rate.test" }, ip: "198.51.100.41" });
   check("contact form: the limit resets after an hour", r.status === 200, r);
 
-  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token_0123456789abcdef0123" });
   check("admin console lists contact messages, newest first",
     r.status === 200 && r.data.messages.length >= 10 && r.data.messages[0].email === "same@rate.test"
     && r.data.messages.some((m) => m.organization === "First Shoals Bank") && !("net_tag" in r.data.messages[0]), r.data.messages?.[0]);
@@ -1482,12 +1482,12 @@ try {
   section("Institution directory (FDIC + NCUA)");
   r = await call("POST", "/api/admin/institutions/sync", { body: { source: "fdic", offset: 0 } });
   check("directory sync needs the admin key", r.status === 401);
-  r = await call("POST", "/api/admin/institutions/sync", { token: "admin_e2e_token", body: { source: "fdic", offset: 0 } });
+  r = await call("POST", "/api/admin/institutions/sync", { token: "admin_e2e_token_0123456789abcdef0123", body: { source: "fdic", offset: 0 } });
   check("FDIC sync imports every active bank in one pass",
     r.status === 200 && r.data.imported === FAKE_BANKS.length && r.data.total === FAKE_BANKS.length && r.data.next_offset === null, r.data);
-  r = await call("POST", "/api/admin/institutions/sync", { token: "admin_e2e_token", body: { source: "ncua", offset: 0 } });
+  r = await call("POST", "/api/admin/institutions/sync", { token: "admin_e2e_token_0123456789abcdef0123", body: { source: "ncua", offset: 0 } });
   check("NCUA sync imports the credit unions", r.data.imported === FAKE_CUS.length && r.data.next_offset === null, r.data);
-  r = await call("POST", "/api/admin/institutions/sync", { token: "admin_e2e_token", body: { source: "fdic", offset: 0 } });
+  r = await call("POST", "/api/admin/institutions/sync", { token: "admin_e2e_token_0123456789abcdef0123", body: { source: "fdic", offset: 0 } });
   const [{ n: instCount }] = await sql`SELECT COUNT(*)::int n FROM institutions`;
   check("re-running the sync refreshes instead of duplicating",
     r.data.imported === FAKE_BANKS.length && instCount === FAKE_BANKS.length + FAKE_CUS.length, { imported: r.data.imported, instCount });
@@ -1526,11 +1526,80 @@ try {
   r = await call("GET", "/sitemap.xml");
   check("sitemap carries the directory pages",
     String(r.data).includes("/banks/al</loc>") && String(r.data).includes("/banks/shoals-community-bank-florence-al</loc>"));
-  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token_0123456789abcdef0123" });
   check("admin console shows directory counts",
     r.data.directory.banks === FAKE_BANKS.length && r.data.directory.credit_unions === FAKE_CUS.length, r.data.directory);
 
   // ================================================================
+  section("Site statistics (no cookies)");
+  const CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36";
+  const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1";
+  const geoHeader = (city, code) => Buffer.from(JSON.stringify({ city, country: { code: "US", name: "United States" }, subdivision: { code, name: code } })).toString("base64");
+  const hit = (body, { ua = CHROME, ip = "198.51.100.200", geo = geoHeader("Florence", "AL"), extra = {} } = {}) =>
+    fetch(BASE + "/api/hit", { method: "POST", body: typeof body === "string" ? body : JSON.stringify(body),
+      headers: { "content-type": "text/plain", "user-agent": ua, "x-nf-client-connection-ip": ip, "x-nf-geo": geo, ...extra } });
+  await sql`DELETE FROM page_hits`;
+  let hitRes = await hit({ p: "home", l: 1, r: "https://www.linkedin.com/feed/", us: null, um: null, uc: null });
+  check("a page view is accepted with 204 and no cookie", hitRes.status === 204 && !hitRes.headers.get("set-cookie"));
+  await hit({ p: "jobs" });
+  await hit({ p: "job", j: 42 });
+  await hit({ p: "home", l: 1, r: BASE + "/#jobs", us: "email", um: "outreach", uc: "hr-intro-nov" }, { ip: "203.0.113.9", ua: IPHONE, geo: geoHeader("Huntsville", "AL") });
+  await hit({ p: "home", l: 1, r: "https://www.google.com/" }, { ip: "203.0.113.10", geo: geoHeader("Atlanta", "GA") });
+  let hitRows = await sql`SELECT * FROM page_hits ORDER BY id`;
+  check("each view stores page, source, approximate location and device, but no IP address",
+    hitRows.length === 5 && hitRows[0].ref_host === "linkedin.com" && hitRows[0].landing && hitRows[0].city === "Florence" && hitRows[0].region === "AL"
+    && hitRows[0].device === "desktop" && hitRows[0].browser === "Chrome" && hitRows[2].job_id == 42 && !hitRows[1].landing
+    && hitRows[3].utm_campaign === "hr-intro-nov" && hitRows[3].ref_host === null && hitRows[3].device === "mobile" && hitRows[3].browser === "Safari"
+    && !JSON.stringify(hitRows).includes("198.51.100.200") && !JSON.stringify(hitRows).includes("203.0.113"), hitRows.map((x) => [x.path, x.ref_host, x.city, x.device]));
+  check("one person's views share a daily visitor code; different people get different codes",
+    hitRows[0].visitor === hitRows[1].visitor && hitRows[1].visitor === hitRows[2].visitor && hitRows[3].visitor !== hitRows[0].visitor && /^[0-9a-f]{32}$/.test(hitRows[0].visitor));
+  check("the visitor code is a salted hash, not the IP", !hitRows[0].visitor.includes("198") && (await sql`SELECT COUNT(*)::int n FROM traffic_salts`)[0].n >= 1);
+  const hitsBefore = hitRows.length;
+  await hit({ p: "home", l: 1 }, { ua: "Googlebot/2.1 (+http://www.google.com/bot.html)" });
+  await hit({ p: "home", l: 1 }, { ua: "Mozilla/5.0 HeadlessChrome/131.0" });
+  await hit({ p: "home", l: 1 }, { extra: { "sec-gpc": "1" } });
+  await hit({ p: "home", l: 1 }, { extra: { dnt: "1" } });
+  await hit({ p: "<script>" });
+  await hit("not json");
+  await hit({ p: "home", l: 1, r: "javascript:alert(1)", us: "x".repeat(500) }, { ip: "203.0.113.11" });
+  hitRows = await sql`SELECT * FROM page_hits ORDER BY id`;
+  check("bots, Global Privacy Control, Do Not Track and junk aren't counted", hitRows.length === hitsBefore + 1, hitRows.length - hitsBefore);
+  check("odd referrers are dropped and long tags cut", hitRows.at(-1).ref_host === null && hitRows.at(-1).utm_source.length === 80);
+  hitRes = await fetch(BASE + "/api/hit");
+  check("the hit endpoint only takes POST", hitRes.status === 405);
+
+  // Sign-ups record where they came from.
+  const srcSignup = await call("POST", "/api/auth/signup", { body: { password: PW_A, contact_name: "Lee Park", contact_title: "HR Manager", company: "Source Test Bank", email: "lee@sourcetest.test", institution_type: "bank",
+    source: { r: "https://www.linkedin.com/in/x", us: "email", um: "outreach", uc: "hr-intro-nov", lp: "home" } }, ip: "203.0.113.30" });
+  await call("POST", "/api/auth/verify", { body: { challenge: srcSignup.data.challenge, code: codeIn("lee@sourcetest.test") } });
+  let [srcEmp] = await sql`SELECT signup_source FROM employers WHERE email = 'lee@sourcetest.test'`;
+  check("an employer sign-up records its campaign and landing page", srcEmp.signup_source?.utm_campaign === "hr-intro-nov" && srcEmp.signup_source.ref === "linkedin.com"
+    && srcEmp.signup_source.landing === "home", srcEmp.signup_source);
+  await fetch(BASE + "/api/candidate-auth/request", { method: "POST", headers: { "content-type": "application/json", "x-nf-geo": geoHeader("Tuscaloosa", "AL") },
+    body: JSON.stringify({ email: "student@ua.test", name: "Sam Student", source: { us: "career-center", uc: "culverhouse", lp: "new-grads" } }) });
+  const [stuRow] = await sql`SELECT signup_source FROM candidates WHERE email = 'student@ua.test'`;
+  check("a candidate sign-up records its source and approximate location", stuRow.signup_source?.utm_source === "career-center" && stuRow.signup_source.city === "Tuscaloosa"
+    && stuRow.signup_source.region === "AL" && stuRow.signup_source.landing === "new-grads", stuRow.signup_source);
+
+  r = await call("GET", "/api/admin/traffic?days=7", { token: "admin_e2e_token_0123456789abcdef0123" });
+  check("admin traffic report: totals and a day-by-day series", r.status === 200 && r.data.days === 7 && r.data.daily.length === 7
+    && r.data.totals.views === hitsBefore + 1 && r.data.totals.visitors === 4 && r.data.daily.at(-1).visitors === 4, r.data);
+  check("…where visitors come from, with campaigns", r.data.sources.some((x) => x.source === "linkedin.com" && x.visits === 1) && r.data.sources.some((x) => x.source === "email")
+    && r.data.sources.some((x) => x.source === "google.com") && r.data.campaigns.some((x) => x.campaign === "hr-intro-nov" && x.source === "email"), r.data.sources);
+  check("…top pages, states, cities and devices", r.data.pages[0].path === "home" && r.data.states.some((x) => x.region === "AL" && x.visitors === 3)
+    && r.data.cities.some((x) => x.city === "Huntsville") && r.data.devices.some((x) => x.device === "mobile" && x.visitors === 1), { states: r.data.states, devices: r.data.devices });
+  check("…and who signed up, with where they came from", r.data.signups.some((e) => e.company === "Source Test Bank" && e.signup_source?.utm_campaign === "hr-intro-nov")
+    && r.data.conversions.employer_signups >= 1 && r.data.candidate_sources.some((x) => x.source === "career-center"), r.data.conversions);
+  r = await call("GET", "/api/admin/traffic?days=999", { token: "admin_e2e_token_0123456789abcdef0123" });
+  check("odd ranges fall back to 30 days", r.data.days === 30 && r.data.daily.length === 30);
+  r = await call("GET", "/api/admin/traffic");
+  check("the traffic report needs the admin key", r.status === 401);
+  await sql`INSERT INTO traffic_salts (day, salt) VALUES (now()::date - 5, 'old')`;
+  await sql`INSERT INTO page_hits (day, path, visitor) VALUES (now()::date - 420, 'home', 'x')`;
+  const prunedStats = await pruneAuth();
+  check("daily maintenance deletes old salts (so codes can't be linked) and views older than 13 months",
+    prunedStats.page_hits === 1 && (await sql`SELECT COUNT(*)::int n FROM traffic_salts WHERE salt = 'old'`)[0].n === 0, prunedStats);
+
   section("Job list caching");
   let jr = await fetch(BASE + "/api/jobs");
   check("the plain job list is cached at the edge briefly; browsers always revalidate",
@@ -1633,7 +1702,7 @@ try {
   r = await call("POST", "/api/employer/plan/billing", { token: keyV, body: { interval: "year" } });
   check("switching billing needs a live plan", r.status === 404 || r.status === 400, r.data);
 
-  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token_0123456789abcdef0123" });
   const swRow = r.data.employers.find((e) => e.email === "pat@switchbank.test");
   check("admin shows yearly plans as a monthly figure (÷12) and flags invoice billing",
     swRow?.plan?.interval === "year" && swRow.plan.monthly_cents === Math.round(99000 / 12) && r.data.billing.yearly?.base_cents === 99000
@@ -1727,14 +1796,14 @@ try {
   check("the institution page now says it's managed by the bank", String(r.data).includes("managed by River City National Bank") && !String(r.data).includes(`/#claim-${riverSlug}`));
 
   // The earlier pending claim can no longer be approved.
-  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token_0123456789abcdef0123" });
   const gmClaim = r.data.claims.find((c) => c.email === "riverhr.pat@gmail.com");
   check("admin sees the claim waiting for review, with who and why (asking again with no picks means every listing)", gmClaim && gmClaim.institution === "River City National Bank" && gmClaim.job_count === 0
     && !r.data.claimable.some((c) => c.slug === riverSlug), { gmClaim, claimable: r.data.claimable });
-  r = await call("POST", `/api/admin/claims/${gmClaim.id}/approve`, { token: "admin_e2e_token", body: {} });
+  r = await call("POST", `/api/admin/claims/${gmClaim.id}/approve`, { token: "admin_e2e_token_0123456789abcdef0123", body: {} });
   check("approving a claim for an institution someone else now manages fails cleanly",
     r.status === 409 && (await sql`SELECT status FROM institution_claims WHERE id = ${gmClaim.id}`)[0].status === "rejected", r.data);
-  r = await call("POST", `/api/admin/claims/${gmClaim.id}/approve`, { token: "admin_e2e_token", body: {} });
+  r = await call("POST", `/api/admin/claims/${gmClaim.id}/approve`, { token: "admin_e2e_token_0123456789abcdef0123", body: {} });
   check("a decided claim can't be decided again", r.status === 409);
 
   // No website on file: reviewed and approved by the site owner.
@@ -1742,12 +1811,12 @@ try {
   const keyMs = await signedUp("pat@msnb.test", "Muscle Shoals National Bank");
   r = await call("POST", `/api/claim/${msnb.slug}`, { token: keyMs, body: {} });
   check("no website on file: the claim waits for review", r.data.status === "pending", r.data);
-  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token_0123456789abcdef0123" });
   check("admin's pitch list shows unclaimed institutions with listings, and their claim link slug",
     r.data.claimable.some((c) => c.slug === msnb.slug && c.listings >= 1), r.data.claimable);
   const msClaim = r.data.claims.find((c) => c.email === "pat@msnb.test");
   outbox().length = 0;
-  r = await call("POST", `/api/admin/claims/${msClaim.id}/approve`, { token: "admin_e2e_token", body: {} });
+  r = await call("POST", `/api/admin/claims/${msClaim.id}/approve`, { token: "admin_e2e_token_0123456789abcdef0123", body: {} });
   const ms = await empRow("pat@msnb.test");
   pmail = lastEmailTo("pat@msnb.test");
   check("admin approves: listings move, the trial starts, and they're emailed",
@@ -1759,7 +1828,7 @@ try {
   r = await call("POST", `/api/claim/${fsb1003.slug}`, { token: keyFs, body: {} });
   const fsClaim = (await sql`SELECT id FROM institution_claims WHERE institution_id = ${fsb1003.id} AND status = 'pending'`)[0];
   outbox().length = 0;
-  r = await call("POST", `/api/admin/claims/${fsClaim.id}/reject`, { token: "admin_e2e_token", body: { note: "We couldn't reach you at the bank's main number." } });
+  r = await call("POST", `/api/admin/claims/${fsClaim.id}/reject`, { token: "admin_e2e_token_0123456789abcdef0123", body: { note: "We couldn't reach you at the bank's main number." } });
   pmail = lastEmailTo("pat@notfsbil.test");
   check("admin rejects with a note: they're told why", r.data.status === "rejected" && pmail && pmail.text.includes("main number"), pmail?.text);
   r = await call("POST", "/api/admin/claims/1/approve", {});
@@ -1770,7 +1839,7 @@ try {
   const keyF2 = await signedUp("pat@fsb1002.test", "First State Bank of Springfield");
   r = await call("POST", `/api/claim/${fsb1002.slug}`, { token: keyF2, body: {} });
   const f2Claim = (await sql`SELECT id FROM institution_claims WHERE institution_id = ${fsb1002.id} AND status = 'pending'`)[0];
-  r = await call("POST", `/api/admin/claims/${f2Claim.id}/approve`, { token: "admin_e2e_token", body: {} });
+  r = await call("POST", `/api/admin/claims/${f2Claim.id}/approve`, { token: "admin_e2e_token_0123456789abcdef0123", body: {} });
   check("approved with no listings to move: nothing starts yet", r.data.status === "approved" && r.data.converted === 0 && !(await empRow("pat@fsb1002.test")).plan_subscription_id, r.data);
   r = await call("GET", "/api/employer", { token: keyF2 });
   check("their plan panel offers the free trial", r.data.plan.trial_available === true && r.data.plan.trial_days === 30, r.data.plan);
@@ -1810,14 +1879,14 @@ try {
   r = await call("PUT", "/api/candidate", { token: ckN, body: { ...nProfile, nmls_id: " NMLS# 0123-456 " } });
   r = await call("GET", "/api/candidate", { token: ckN });
   check("a new NMLS ID is cleaned up and waits for review", r.data.candidate.nmls_id === "123456" && r.data.candidate.nmls_status === "pending", r.data.candidate);
-  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token_0123456789abcdef0123" });
   const nRow = r.data.nmls.find((c) => c.email === "nora@example.test");
   check("admin's NMLS queue lists it", nRow && nRow.nmls_id === "123456" && nRow.name === "Nora Lane", r.data.nmls);
   outbox().length = 0;
-  r = await call("POST", `/api/admin/candidates/${nRow.id}/nmls/verify`, { token: "admin_e2e_token", body: {} });
+  r = await call("POST", `/api/admin/candidates/${nRow.id}/nmls/verify`, { token: "admin_e2e_token_0123456789abcdef0123", body: {} });
   pmail = lastEmailTo("nora@example.test");
   check("admin verifies after checking NMLS by hand; the candidate is emailed", r.status === 200 && pmail && /verified/.test(pmail.subject));
-  r = await call("POST", `/api/admin/candidates/${nRow.id}/nmls/verify`, { token: "admin_e2e_token", body: {} });
+  r = await call("POST", `/api/admin/candidates/${nRow.id}/nmls/verify`, { token: "admin_e2e_token_0123456789abcdef0123", body: {} });
   check("it can't be verified twice", r.status === 409);
   r = await call("GET", "/api/candidate", { token: ckN });
   check("the profile shows it verified, with the date", r.data.candidate.nmls_status === "verified" && !!r.data.candidate.nmls_checked_at);
@@ -1844,10 +1913,10 @@ try {
   r = await call("PUT", "/api/candidate", { token: ckN, body: { ...nProfile, name: "Nora Lane-Smith" } });
   r = await call("GET", "/api/candidate", { token: ckN });
   check("changing the name on a verified ID sends it back for review", r.data.candidate.nmls_status === "pending", r.data.candidate.nmls_status);
-  r = await call("GET", "/api/admin", { token: "admin_e2e_token" });
+  r = await call("GET", "/api/admin", { token: "admin_e2e_token_0123456789abcdef0123" });
   const nRow2 = r.data.nmls.find((c) => c.email === "nora@example.test");
   outbox().length = 0;
-  r = await call("POST", `/api/admin/candidates/${nRow2.id}/nmls/reject`, { token: "admin_e2e_token", body: { note: "Name on NMLS is Nora Lane" } });
+  r = await call("POST", `/api/admin/candidates/${nRow2.id}/nmls/reject`, { token: "admin_e2e_token_0123456789abcdef0123", body: { note: "Name on NMLS is Nora Lane" } });
   pmail = lastEmailTo("nora@example.test");
   r = await call("GET", "/api/candidate", { token: ckN });
   check("a mismatch is rejected with a note the candidate sees", r.data.candidate.nmls_status === "rejected" && r.data.candidate.nmls_note === "Name on NMLS is Nora Lane"
@@ -1857,6 +1926,108 @@ try {
   check("clearing the ID clears the status", r.data.candidate.nmls_id === "" && r.data.candidate.nmls_status === "none");
   r = await call("POST", `/api/admin/candidates/${nRow2.id}/nmls/verify`, {});
   check("NMLS review needs the admin key", r.status === 401);
+
+  // ================================================================
+  section("Security headers and rate limits");
+  const shared = await import("../netlify/lib/shared.mjs");
+  const { staticHeaders } = await import("./local-server.mjs");
+  const tomlHeaders = Object.fromEntries(Object.entries(await staticHeaders()).map(([k, v]) => [k.toLowerCase(), v]));
+  check("netlify.toml sends exactly the page headers the functions send",
+    JSON.stringify(Object.entries(tomlHeaders).sort()) === JSON.stringify(Object.entries(shared.PAGE_HEADERS).sort()), tomlHeaders);
+  const indexHtml = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const inlineScripts = [...indexHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  const bootHash = "sha256-" + (await import("node:crypto")).createHash("sha256").update(inlineScripts[0] || "").digest("base64");
+  check("index.html has exactly one inline script, and the CSP allows it by its hash",
+    inlineScripts.length === 1 && bootHash === shared.BOOT_SCRIPT_HASH && shared.PAGE_CSP.includes(`'${bootHash}'`), bootHash);
+  check("no inline event handlers or javascript: links in the HTML (the CSP would block them)",
+    !/\son[a-z]+\s*=/i.test(indexHtml.replace(/<script>[\s\S]*?<\/script>/g, "")) && !/javascript:/i.test(indexHtml));
+  check("the CSP allows no inline or eval'd script", !/unsafe-inline[^;]*;/.test(shared.PAGE_CSP.split("script-src")[1].split(";")[0] + ";") && !shared.PAGE_CSP.includes("unsafe-eval"));
+  const hdr = (res, name) => res.headers.get(name) || "";
+  r = await fetch(`${BASE}/`);
+  check("the static site is served with CSP, HSTS, nosniff and no framing",
+    hdr(r, "content-security-policy") === shared.PAGE_CSP && /max-age=31536000/.test(hdr(r, "strict-transport-security"))
+    && hdr(r, "x-content-type-options") === "nosniff" && hdr(r, "x-frame-options") === "DENY" && hdr(r, "cross-origin-opener-policy") === "same-origin");
+  r = await fetch(`${BASE}/api/jobs`);
+  check("API answers carry the locked-down policy too", hdr(r, "content-security-policy") === "default-src 'none'; frame-ancestors 'none'"
+    && hdr(r, "x-content-type-options") === "nosniff" && hdr(r, "x-frame-options") === "DENY" && /max-age/.test(hdr(r, "strict-transport-security")));
+  const [openJob] = await sql`SELECT id FROM jobs WHERE status = 'open' AND expires_at > now() AND employer_id IS NOT NULL LIMIT 1`;
+  r = await fetch(`${BASE}/jobs/${openJob.id}`);
+  check("server-rendered job pages carry the page CSP (Netlify doesn't add headers to functions)",
+    r.status === 200 && hdr(r, "content-security-policy") === shared.PAGE_CSP && hdr(r, "x-frame-options") === "DENY");
+  r = await fetch(`${BASE}/jobs/99999999`);
+  check("…and so does a job page that's gone", r.status === 404 && hdr(r, "content-security-policy") === shared.PAGE_CSP);
+  r = await fetch(`${BASE}/banks`);
+  check("bank directory pages carry the page CSP", hdr(r, "content-security-policy") === shared.PAGE_CSP);
+  r = await call("GET", "/api/alerts/confirm?token=nope", { raw: true });
+  check("redirects carry the base headers", r.status === 303 && hdr(r, "x-content-type-options") === "nosniff");
+
+  // The admin console stays shut with a short key.
+  const realAdmin = process.env.ADMIN_TOKEN;
+  process.env.ADMIN_TOKEN = "short-key-123";
+  r = await call("GET", "/api/admin", { token: "short-key-123" });
+  process.env.ADMIN_TOKEN = realAdmin;
+  check("a short ADMIN_TOKEN keeps the admin console shut", r.status === 503 && /32 characters/.test(r.data.error), r.data);
+
+  // Candidate sign-in links: 5 per inbox per network an hour, 20 per inbox, 60 per network.
+  const rlIp = "203.0.113.90";
+  const codes = [];
+  for (let i = 0; i < 6; i++) codes.push((await call("POST", "/api/candidate-auth/request", { ip: rlIp, body: { email: "flood@example.test" } })).status);
+  check("sign-in links: a 6th request for one inbox from one network is refused", codes.slice(0, 5).every((c) => c === 200) && codes[5] === 429, codes);
+  r = await call("POST", "/api/candidate-auth/request", { ip: "203.0.113.91", body: { email: "flood@example.test" } });
+  check("…another network can still ask (so a flood from elsewhere can't lock the owner out)", r.status === 200);
+  for (let i = 0; i < 14; i++) await call("POST", "/api/candidate-auth/request", { ip: `203.0.113.${100 + i}`, body: { email: "flood@example.test" } });
+  r = await call("POST", "/api/candidate-auth/request", { ip: "203.0.113.200", body: { email: "flood@example.test" } });
+  check("…but one inbox gets at most 20 an hour from all networks together", r.status === 429, r.status);
+  outbox().length = 0;
+  const netCodes = [];
+  for (let i = 0; i < 61; i++) netCodes.push((await call("POST", "/api/candidate-auth/request", { ip: "203.0.113.95", body: { email: `rotate${i}@example.test` } })).status);
+  check("…and one network gets at most 60 an hour across addresses", netCodes.filter((c) => c === 429).length === 1 && netCodes[60] === 429, netCodes.filter((c) => c === 429).length);
+  check("…refused requests send nothing", outbox().length === 60, outbox().length);
+  const [{ n: rawKeys }] = await sql`SELECT COUNT(*)::int AS n FROM rate_limits WHERE key LIKE '%@%' OR key LIKE '%203.0.113%'`;
+  check("rate-limit rows hold hashes, never an address or an IP", rawKeys === 0);
+  r = await call("POST", "/api/candidate-auth/request", { ip: rlIp, body: { email: "not-an-email" } });
+  check("a bad address is turned away before it counts", r.status === 400);
+
+  // Employer sign-up and reset emails share one limit, the same for existing and unknown emails.
+  const eCodes = [];
+  for (let i = 0; i < 6; i++) eCodes.push((await call("POST", "/api/auth/forgot", { ip: rlIp, body: { email: "hr@shoalsbank.test" } })).status);
+  const uCodes = [];
+  for (let i = 0; i < 6; i++) uCodes.push((await call("POST", "/api/auth/forgot", { ip: rlIp, body: { email: "nobody-rl@nowhere.test" } })).status);
+  check("reset emails: limited the same way whether or not the account exists", JSON.stringify(eCodes) === JSON.stringify(uCodes) && eCodes[5] === 429, [eCodes, uCodes]);
+  r = await call("POST", "/api/auth/signup", { ip: rlIp, body: { contact_name: "R", company: "R Bank", email: "hr@shoalsbank.test", password: "Limit-Test-Pass-77" } });
+  check("…and sign-up counts against the same limit", r.status === 429, r.data);
+
+  // Job alerts: 3 confirmation emails per inbox per network an hour.
+  const aCodes = [];
+  for (let i = 0; i < 4; i++) aCodes.push((await call("POST", "/api/alerts", { ip: rlIp, body: { email: "alerts-rl@example.test" } })).status);
+  check("alert confirmations: a 4th from one network is refused", JSON.stringify(aCodes) === "[200,200,200,429]", aCodes);
+
+  // Applications: 25 per address per network an hour (counted even for jobs that are gone).
+  const apCodes = [];
+  for (let i = 0; i < 26; i++) apCodes.push((await call("POST", "/api/apply", { ip: rlIp, body: { job_id: "99999999", name: "Spam", email: "spam-apply@example.test" } })).status);
+  check("applications: the 26th from one address and network is refused", apCodes.slice(0, 25).every((c) => c === 404) && apCodes[25] === 429, apCodes.slice(-3));
+
+  // Alerts can't be changed by someone who only knows the subscriber's email.
+  outbox().length = 0;
+  await call("POST", "/api/alerts", { ip: "203.0.113.150", body: { email: "sub-guard@example.test", categories: ["lending-credit"] } });
+  const guardLink = lastEmailTo("sub-guard@example.test")?.text.match(/https?:\S+confirm\?token=\w+/)?.[0];
+  await fetch(guardLink, { redirect: "manual" });
+  outbox().length = 0;
+  r = await call("POST", "/api/alerts", { ip: "203.0.113.151", body: { email: "sub-guard@example.test", categories: ["technology"] } });
+  let [guard] = await sql`SELECT categories, pending_categories FROM alert_subscriptions WHERE email = 'sub-guard@example.test'`;
+  const changeMail = lastEmailTo("sub-guard@example.test");
+  check("a confirmed subscriber's alerts don't change just because someone posts their email",
+    r.status === 200 && r.data.confirmed === undefined && guard.categories.join() === "lending-credit" && guard.pending_categories.join() === "technology", guard);
+  check("…the subscriber is emailed a link to confirm the change", /Confirm your new BankJobz alert choices/.test(changeMail?.subject || ""));
+  await fetch(changeMail.text.match(/https?:\S+confirm\?token=\w+/)[0], { redirect: "manual" });
+  [guard] = await sql`SELECT categories, pending_categories FROM alert_subscriptions WHERE email = 'sub-guard@example.test'`;
+  check("…and clicking it applies the change", guard.categories.join() === "technology" && guard.pending_categories === null, guard);
+
+  // Old counters are pruned.
+  await sql`UPDATE rate_limits SET window_start = now() - interval '3 days' WHERE key LIKE 'al:%'`;
+  const prunedLimits = await pruneAuth();
+  const [{ n: alLeft }] = await sql`SELECT COUNT(*)::int AS n FROM rate_limits WHERE key LIKE 'al:%'`;
+  check("old rate-limit counters are cleared by the daily prune", prunedLimits.rate_limits > 0 && alLeft === 0, prunedLimits);
 } catch (err) {
   failed++;
   results.push(`\n  ✗ crashed: ${err.stack}`);

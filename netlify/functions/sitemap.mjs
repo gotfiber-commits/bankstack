@@ -1,11 +1,11 @@
 // GET /sitemap.xml and /robots.txt
-import { db, siteUrl } from "../lib/shared.mjs";
+import { db, siteUrl, API_HEADERS } from "../lib/shared.mjs";
 
 export default async (req) => {
   const base = siteUrl(req);
   if (new URL(req.url).pathname === "/robots.txt") {
     return new Response(`User-agent: *\nDisallow: /api/\nSitemap: ${base}/sitemap.xml\n`, {
-      headers: { "content-type": "text/plain" },
+      headers: { ...API_HEADERS, "content-type": "text/plain; charset=utf-8" },
     });
   }
   // Only employer-posted jobs are listed; sourced listings point at someone else's original.
@@ -25,7 +25,7 @@ export default async (req) => {
     ...institutions.map((i) => `<url><loc>${base}/banks/${i.slug}</loc><lastmod>${new Date(i.updated_at).toISOString()}</lastmod></url>`)];
   return new Response(
     `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join("\n")}\n</urlset>\n`,
-    { headers: { "content-type": "application/xml" } });
+    { headers: { ...API_HEADERS, "content-type": "application/xml; charset=utf-8" } });
 };
 
 export const config = { path: ["/sitemap.xml", "/robots.txt"] };

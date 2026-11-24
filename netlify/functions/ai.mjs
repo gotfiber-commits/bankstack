@@ -6,7 +6,7 @@
 // Both are rate-limited per user/IP per day, and the whole feature is off until
 // ANTHROPIC_API_KEY is set. Drafts are suggestions: a person always reviews before using them.
 import {
-  db, json, fail, clean, employerFromRequest, candidateFromRequest, CATEGORIES,
+  db, json, fail, clean, employerFromRequest, candidateFromRequest, CATEGORIES, API_HEADERS,
 } from "../lib/shared.mjs";
 import { aiEnabled, askClaude, streamClaude, underAiLimit, parseSections } from "../lib/ai.mjs";
 
@@ -109,7 +109,7 @@ async function handle(req) {
           controller.close();
         },
       });
-      return new Response(body, { headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff" } });
+      return new Response(body, { headers: { ...API_HEADERS, "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
     }
 
     let text = "";

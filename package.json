@@ -14,14 +14,14 @@
   "dependencies": {
     "@neondatabase/serverless": "^1.0.0",
     "@netlify/blobs": "^8.1.0",
-    "fflate": "^0.8.2",
+    "fflate": "^0.8.3",
     "pdf-parse": "^1.1.1",
     "pg": "^8.13.1",
     "qrcode": "^1.5.4",
     "stripe": "^18.0.0"
   },
   "devDependencies": {
-    "netlify-cli": "^23.0.0",
+    "netlify-cli": "^27.20.1",
     "playwright": "^1.48.0"
   },
   "engines": {

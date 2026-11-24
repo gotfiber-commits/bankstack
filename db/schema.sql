@@ -366,3 +366,49 @@ ALTER TABLE candidates ADD COLUMN IF NOT EXISTS nmls_note       TEXT;
 ALTER TABLE candidates DROP CONSTRAINT IF EXISTS candidates_nmls_status_check;
 ALTER TABLE candidates ADD CONSTRAINT candidates_nmls_status_check CHECK (nmls_status IN ('none', 'pending', 'verified', 'rejected'));
 CREATE INDEX IF NOT EXISTS candidates_nmls_pending_idx ON candidates (nmls_status) WHERE nmls_status = 'pending';
+
+-- Site statistics (Nov 2026): first-party page views, no cookies. visitor is a hash of the network
+-- address and browser with a salt that changes daily and is deleted after two days, so it counts unique
+-- visitors per day without storing the address or following anyone across days. Location is the
+-- approximate city and state from Netlify's geolocation. Rows are deleted after 13 months.
+CREATE TABLE IF NOT EXISTS page_hits (
+  id           BIGSERIAL PRIMARY KEY,
+  at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  day          DATE NOT NULL DEFAULT (now() AT TIME ZONE 'America/Chicago')::date,
+  path         TEXT NOT NULL,
+  job_id       BIGINT,
+  landing      BOOLEAN NOT NULL DEFAULT false,
+  ref_host     TEXT,
+  utm_source   TEXT,
+  utm_medium   TEXT,
+  utm_campaign TEXT,
+  country      TEXT,
+  region       TEXT,
+  city         TEXT,
+  device       TEXT,
+  browser      TEXT,
+  visitor      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS page_hits_day_idx ON page_hits (day);
+CREATE INDEX IF NOT EXISTS page_hits_visitor_idx ON page_hits (day, visitor);
+CREATE TABLE IF NOT EXISTS traffic_salts (
+  day  DATE PRIMARY KEY,
+  salt TEXT NOT NULL
+);
+-- Where an account came from: the referring site or campaign of the visit it signed up in, and the
+-- approximate city and state.
+ALTER TABLE employers  ADD COLUMN IF NOT EXISTS signup_source JSONB;
+ALTER TABLE candidates ADD COLUMN IF NOT EXISTS signup_source JSONB;
+
+-- Rate limits (security review, Nov 2026): fixed-window counters keyed by hashes of an email,
+-- a network or an account id, never the address itself. Pruned daily.
+CREATE TABLE IF NOT EXISTS rate_limits (
+  key          TEXT PRIMARY KEY,
+  window_start TIMESTAMPTZ NOT NULL DEFAULT now(),
+  hits         INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS rate_limits_window_idx ON rate_limits (window_start);
+
+-- Job alerts: a confirmed subscriber's new choices wait here until they click the emailed link,
+-- so nobody can change someone else's alerts just by knowing their email.
+ALTER TABLE alert_subscriptions ADD COLUMN IF NOT EXISTS pending_categories TEXT[];

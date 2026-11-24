@@ -649,9 +649,9 @@
       const btn = form.querySelector("button");
       btn.disabled = true;
       try {
-        const r = await api("/api/alerts", { method: "POST", body: JSON.stringify({
+        await api("/api/alerts", { method: "POST", body: JSON.stringify({
           email, categories: fd.getAll("categories"), company_website: fd.get("company_website") }) });
-        showMsg(msg, r.confirmed ? "Your alert specialties are updated." : `Check ${email} and click the link to confirm.`, false);
+        showMsg(msg, `Check ${email} and click the link to confirm.`, false);
       } catch (err) { showMsg(msg, err.message, true); }
       btn.disabled = false;
     });
@@ -1188,7 +1188,7 @@
           if (state.demo) return showMsg(msgBox(), "Preview mode: on the live site this creates your account.", false);
           busy(form, true);
           try {
-            const r = await api("/api/auth/signup", { method: "POST", body: JSON.stringify(data) });
+            const r = await api("/api/auth/signup", { method: "POST", body: JSON.stringify({ ...data, source: signupSourceInfo() }) });
             codeStep({ ...r, email: data.email.trim(), purpose: "verify" });
           } catch (err) {
             busy(form, false);
@@ -1507,6 +1507,107 @@
       }
     });
     document.getElementById("a-linkpw")?.focus();
+  }
+
+  // ---- Site statistics: one beacon per page view, no cookies ----
+  // Where this visit came from, read once as the page loads (before sign-in links tidy the address bar).
+  const landingSource = (() => {
+    const q = new URLSearchParams(location.search);
+    let r = null;
+    try { if (document.referrer && new URL(document.referrer).hostname !== location.hostname) r = document.referrer; } catch { /* none */ }
+    return { r, us: q.get("utm_source"), um: q.get("utm_medium"), uc: q.get("utm_campaign") };
+  })();
+  let firstHit = true, landingPage = null;
+  // Visitors who ask not to be tracked aren't counted at all, and neither is the site owner.
+  const privacySignal = () => navigator.globalPrivacyControl === true || navigator.doNotTrack === "1" || window.doNotTrack === "1";
+  function pageOf(h) {
+    if (h.startsWith("job-")) return { p: "job", j: Number(h.slice(4)) || undefined };
+    if (h.startsWith("claim-")) return { p: "claim" };
+    if (h.startsWith("edit-")) return { p: "edit" };
+    return { p: /^[a-z][a-z0-9-]{0,29}$/.test(h) ? h : "other" };
+  }
+  function track(h) {
+    if (state.demo || adminKey() || privacySignal()) return;
+    const page = pageOf(h);
+    const body = { ...page, ...(firstHit ? { l: 1, ...landingSource } : {}) };
+    if (firstHit) landingPage = page.p;
+    firstHit = false;
+    const data = JSON.stringify(body);
+    try {
+      if (navigator.sendBeacon && navigator.sendBeacon("/api/hit", data)) return;
+    } catch { /* fall through */ }
+    fetch("/api/hit", { method: "POST", body: data, keepalive: true, headers: { "content-type": "text/plain" } }).catch(() => {});
+  }
+  // Sent with a sign-up so the account records which link or campaign brought it.
+  const signupSourceInfo = () => ({ ...landingSource, lp: landingPage });
+
+  // ---- Admin: site traffic ----
+  const PAGE_NAMES = {
+    home: "Home", jobs: "Current positions", job: "Job pages", "new-grads": "New grads", internships: "Internships",
+    post: "Post a job", dashboard: "Employer dashboard", edit: "Edit a posting", claim: "Claim your listings",
+    profile: "Candidate profile", matches: "Matches", saved: "Saved jobs", applications: "My applications",
+    contact: "Contact us", welcome: "Welcome (after checkout)", "email-link": "Email sign-in link", other: "Other",
+  };
+  const sourceOf = (src) => !src ? "—" : [src.utm_source || src.ref || "Direct, email or bookmark", src.utm_campaign ? `“${src.utm_campaign}”` : ""].filter(Boolean).join(" · ");
+  const placeOf = (src) => !src ? "—" : [src.city, src.region, src.country && src.country !== "US" ? src.country : ""].filter(Boolean).join(", ") || "—";
+  async function loadTraffic(days) {
+    const box = document.getElementById("admin-traffic");
+    if (!box) return;
+    let t;
+    try { t = await api(`/api/admin/traffic?days=${days}`, { admin: true }); }
+    catch (err) { box.innerHTML = `<h2>Site traffic</h2><p class="msg error">${esc(err.message)}</p>`; return; }
+    const max = Math.max(1, ...t.daily.map((d) => d.visitors));
+    const w = 100 / t.daily.length;
+    const bars = t.daily.map((d, i) => {
+      const h = Math.round((d.visitors / max) * 100);
+      return `<rect x="${(i * w + w * 0.15).toFixed(2)}%" y="${100 - h}%" width="${(w * 0.7).toFixed(2)}%" height="${Math.max(h, d.visitors ? 1 : 0)}%" rx="1"><title>${esc(fmtDate(d.day + "T12:00:00"))}: ${d.visitors} visitor${d.visitors === 1 ? "" : "s"}, ${d.views} page view${d.views === 1 ? "" : "s"}</title></rect>`;
+    }).join("");
+    const table = (title, head, rows, empty = "No data yet.") => `<div class="traffic-card"><h3>${title}</h3>${rows.length
+      ? `<table class="mini"><thead><tr>${head.map((x, i) => `<th${i ? ' class="num"' : ""}>${x}</th>`).join("")}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c, i) => `<td${i ? ' class="num"' : ""}>${c}</td>`).join("")}</tr>`).join("")}</tbody></table>`
+      : `<p class="source-note">${empty}</p>`}</div>`;
+    const c = t.conversions;
+    box.innerHTML = `
+      <div class="traffic-head"><h2>Site traffic</h2>
+        <div class="seg-btns" role="group" aria-label="Date range">${[7, 30, 90].map((n) => `<button type="button" class="seg-btn" data-days="${n}" aria-pressed="${n === t.days}">${n} days</button>`).join("")}</div></div>
+      <div class="figures-grid admin-figures traffic-figures">
+        <div><strong>${t.totals.visitors.toLocaleString()}</strong><span>visitors (daily uniques, added up)</span></div>
+        <div><strong>${t.totals.views.toLocaleString()}</strong><span>page views</span></div>
+        <div><strong>${c.employer_signups}</strong><span>employer sign-ups</span></div>
+        <div><strong>${c.candidate_signups}</strong><span>candidate sign-ups</span></div>
+        <div><strong>${c.applications}</strong><span>applications</span></div>
+        <div><strong>${c.postings}</strong><span>postings published</span></div>
+      </div>
+      <figure class="traffic-chart"><figcaption class="source-note">Visitors per day, last ${t.days} days (hover a bar for the numbers)</figcaption>
+        <svg viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Visitors per day">${bars}</svg>
+        <div class="traffic-axis"><span>${esc(fmtDate(t.daily[0].day + "T12:00:00"))}</span><span>${esc(fmtDate(t.daily.at(-1).day + "T12:00:00"))}</span></div></figure>
+      <div class="traffic-grid">
+        ${table("Where visitors come from", ["Source", "Visits"], t.sources.map((r) => [esc(r.source), r.visits]))}
+        ${table("Campaigns (utm_campaign)", ["Campaign", "Visits"], t.campaigns.map((r) => [`${esc(r.campaign)}${r.source ? ` <span class="source-note">${esc(r.source)}</span>` : ""}`, r.visits]), "None yet. Tag your email and ad links (see below) to see them here.")}
+        ${table("Top pages", ["Page", "Views"], t.pages.map((r) => [esc(PAGE_NAMES[r.path] || r.path), r.views]))}
+        ${table("Most-viewed jobs", ["Job", "Views"], t.jobs.map((r) => [r.title ? `${esc(r.title)} <span class="source-note">${esc(r.company)}</span>` : `#${r.job_id}`, r.views]))}
+        ${table("States", ["State", "Visitors"], t.states.map((r) => [esc(r.country === "US" || r.country === "?" ? r.region : `${r.region}, ${r.country}`), r.visitors]))}
+        ${table("Cities", ["City", "Visitors"], t.cities.map((r) => [esc([r.city, r.region].filter(Boolean).join(", ")), r.visitors]))}
+        ${table("Devices", ["Device", "Visitors"], t.devices.map((r) => [esc(r.device[0].toUpperCase() + r.device.slice(1)), r.visitors]))}
+        ${table("Where candidates came from", ["Source", "Sign-ups"], t.candidate_sources.map((r) => [esc(r.source), r.signups]))}
+      </div>
+      <h3>Employer sign-ups: who, and where they came from</h3>
+      ${t.signups.length ? `<div class="table-wrap"><table class="stack-table">
+        <thead><tr><th>Institution</th><th>Contact</th><th>Came from</th><th>Location</th><th>Signed up</th></tr></thead>
+        <tbody>${t.signups.map((e) => `<tr>
+          <td data-label="Institution"><b>${esc(e.company)}</b></td>
+          <td data-label="Contact">${esc(e.contact_name || "")}${e.contact_title ? `, ${esc(e.contact_title)}` : ""}<br><a href="mailto:${esc(e.email)}">${esc(e.email)}</a></td>
+          <td data-label="Came from">${esc(sourceOf(e.signup_source))}${e.signup_source?.landing ? `<br><span class="source-note">landed on ${esc(PAGE_NAMES[e.signup_source.landing] || e.signup_source.landing)}</span>` : ""}</td>
+          <td data-label="Location">${esc(placeOf(e.signup_source))}</td>
+          <td data-label="Signed up">${esc(fmtDate(e.created_at))}</td></tr>`).join("")}</tbody></table></div>`
+        : `<p class="source-note">No employer sign-ups in this period.</p>`}
+      <details class="utm-help"><summary>How to see which emails and ads work</summary>
+        <p>Add a tag to the end of every link you send, and visits from it show under <i>Campaigns</i> and on each sign-up above. For example:</p>
+        <p><code>https://bankjobz.com/?utm_source=email&amp;utm_campaign=hr-intro-nov</code><br>
+        <code>https://bankjobz.com/?utm_source=linkedin&amp;utm_campaign=internships-ad</code><br>
+        <code>https://bankjobz.com/?utm_source=career-center&amp;utm_campaign=una#new-grads</code></p>
+        <p class="source-note">No cookies are used. Visitors are counted with a code that changes every day, so "visitors" over a range adds up each day's. People whose browser sends Do Not Track or Global Privacy Control, bots, and your own visits while signed in to this console aren't counted.</p>
+      </details>`;
+    box.querySelectorAll("[data-days]").forEach((b) => b.addEventListener("click", () => loadTraffic(Number(b.dataset.days))));
   }
 
   // ---- Claim your listings ----
@@ -2443,7 +2544,8 @@
           <div><strong>${d.open_jobs}</strong><span>jobs on the board</span></div>
           <div><strong>${((d.directory?.banks || 0) + (d.directory?.credit_unions || 0)).toLocaleString()}</strong><span>institutions in the directory (${d.directory?.banks || 0} banks, ${d.directory?.credit_unions || 0} CUs)</span></div>
         </div>
-          <section class="panel" id="admin-claims">
+          <section class="panel" id="admin-traffic"><h2>Site traffic</h2><p class="source-note">Loading…</p></section>
+        <section class="panel" id="admin-claims">
           <h2>Claims to review</h2>
           ${(d.claims || []).length ? `<ul class="inbox">${d.claims.map((c) => `<li>
             <div class="inbox-head"><b>${esc(c.institution)}</b>${c.city ? ` · ${esc(c.city)}, ${esc(c.state)}` : ""}
@@ -2583,6 +2685,7 @@
         say("Plan price created in Stripe. Employers can post now.");
       } catch (err) { btn.disabled = false; say(err.message); }
     });
+    loadTraffic(30);
     document.querySelectorAll("[data-claim]").forEach((b) => b.addEventListener("click", async () => {
       const approve = b.dataset.decide === "approve";
       let note = "";
@@ -2682,7 +2785,7 @@
       if (!/^\S+@\S+\.\S+$/.test(email)) return showMsg(msg, "Enter a valid email address.", true);
       if (state.demo) return showMsg(msg, "Preview mode: on the live site this emails you a sign-in link.", false);
       try {
-        await api("/api/candidate-auth/request", { method: "POST", body: JSON.stringify({ email, name: fd.get("name"), company_website: fd.get("company_website") }) });
+        await api("/api/candidate-auth/request", { method: "POST", body: JSON.stringify({ email, name: fd.get("name"), company_website: fd.get("company_website"), source: signupSourceInfo() }) });
         showMsg(msg, `Check ${email} for your sign-in link. It works for 30 minutes.`, false);
       } catch (err) { showMsg(msg, err.message, true); }
     });
@@ -3073,6 +3176,7 @@
       state.dataReady.then(() => { if (location.href === at) route(); });
       return;
     }
+    track(h);
     // A one-time notice shows with the page it belongs to (not on the placeholder above).
     document.getElementById("flash").hidden = true;
     if (state.pendingFlash) { const [t, bad] = state.pendingFlash; state.pendingFlash = null; setTimeout(() => flash(t, bad), 0); }
